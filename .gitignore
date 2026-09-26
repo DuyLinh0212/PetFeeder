@@ -19,3 +19,8 @@ build/
 *.zip
 .codex_docx_tmp_*/
 ~$*
+
+# Word documents & internal task notes
+*.docx
+GIAO_VIEC_*.md
+PHAN_CONG_*.md
