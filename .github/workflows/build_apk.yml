@@ -3,16 +3,16 @@ name: Build Android APK (CI/CD)
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'petfeeder_app/**'
-      - '.github/workflows/build_apk.yml'
   pull_request:
     branches: [ main ]
-  workflow_dispatch: # Cho phép nhấn nút "Run workflow" thủ công trên GitHub
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build Flutter APK
+    name: Auto Build Flutter APK & Release
     runs-on: ubuntu-latest
 
     steps:
@@ -43,9 +43,23 @@ jobs:
         working-directory: petfeeder_app
         run: flutter build apk --release
 
-      - name: 📤 Upload APK Artifact
+      - name: 📤 Lưu trữ file APK (Artifact)
         uses: actions/upload-artifact@v4
         with:
           name: PetFeeder-Release-APK
           path: petfeeder_app/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30
+
+      - name: 🚀 Tự động phát hành bản Release APK
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest
+          name: "PetFeeder App - Bản cập nhật tự động (Latest)"
+          body: |
+            ## 📱 Bản cài đặt PetFeeder Mobile App
+            * Bản build được tạo tự động 100% bởi GitHub Actions CI/CD khi push code lên `main`.
+            * **Commit:** ${{ github.sha }}
+            
+            Tải trực tiếp file `app-release.apk` bên dưới để cài vào điện thoại Android.
+          files: petfeeder_app/build/app/outputs/flutter-apk/app-release.apk
