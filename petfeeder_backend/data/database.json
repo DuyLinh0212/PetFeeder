@@ -1,0 +1,119 @@
+{
+  "device_state": {
+    "device_id": "petfeeder_01",
+    "online": false,
+    "system_status": "SAN SANG",
+    "food_level_percent": 78,
+    "distance_cm": 6.5,
+    "bowl_weight_g": 42,
+    "ip_address": "192.168.1.105",
+    "wifi_rssi": -55,
+    "last_seen": "2026-09-26T08:17:45.267Z",
+    "last_feed_time": "2026-09-26T08:17:29.948Z",
+    "last_feed_portion_g": 41.2,
+    "last_feed_status": "SUCCESS"
+  },
+  "device_config": {
+    "safe_interval_sec": 180,
+    "tank_height_cm": 25,
+    "empty_threshold_cm": 20,
+    "pulse_step_angle": 90,
+    "pulse_step_ms": 600,
+    "anti_jam_max_retries": 3
+  },
+  "schedules": [
+    {
+      "id": "sch_1",
+      "name": "Bữa sáng",
+      "time": "07:00",
+      "portion_g": 40,
+      "days": [
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "CN"
+      ],
+      "enabled": true,
+      "created_at": "2026-09-24T08:08:54.258Z"
+    },
+    {
+      "id": "sch_2",
+      "name": "Bữa trưa",
+      "time": "12:30",
+      "portion_g": 35,
+      "days": [
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "CN"
+      ],
+      "enabled": true,
+      "created_at": "2026-09-24T08:08:54.258Z"
+    },
+    {
+      "id": "sch_3",
+      "name": "Bữa tối",
+      "time": "19:00",
+      "portion_g": 45,
+      "days": [
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "CN"
+      ],
+      "enabled": true,
+      "created_at": "2026-09-24T08:08:54.258Z"
+    }
+  ],
+  "feeding_history": [
+    {
+      "id": "feed_1790410649948",
+      "timestamp": "2026-09-26T08:17:29.948Z",
+      "trigger_source": "app",
+      "target_portion_g": 40,
+      "actual_weight_g": 41.2,
+      "status": "SUCCESS",
+      "message": "Cấp thức ăn thành công (Closed-loop 41.2g)",
+      "duration_ms": 0
+    },
+    {
+      "id": "feed_init_1",
+      "timestamp": "2026-09-26T04:08:54.258Z",
+      "trigger_source": "schedule",
+      "target_portion_g": 40,
+      "actual_weight_g": 39.5,
+      "status": "SUCCESS",
+      "message": "Cấp thức ăn tự động theo lịch Bữa sáng hoàn tất",
+      "duration_ms": 3200
+    },
+    {
+      "id": "feed_init_2",
+      "timestamp": "2026-09-26T00:08:54.258Z",
+      "trigger_source": "app",
+      "target_portion_g": 20,
+      "actual_weight_g": 20.2,
+      "status": "SUCCESS",
+      "message": "Cho ăn ngay từ Mobile App thành công",
+      "duration_ms": 2100
+    }
+  ],
+  "alerts": [
+    {
+      "id": "alert_1",
+      "timestamp": "2026-09-26T06:08:54.258Z",
+      "level": "info",
+      "title": "Hệ thống sẵn sàng",
+      "message": "Bộ điều khiển ESP32 đã kết nối vào mạng Wi-Fi và đồng bộ dữ liệu",
+      "read": true
+    }
+  ]
+}

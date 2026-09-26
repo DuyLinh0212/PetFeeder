@@ -1,0 +1,21 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Flutter / Dart
+.dart_tool/
+.idea/
+*.iml
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Archives & Temporary files
+*.rar
+*.zip
+.codex_docx_tmp_*/
+~$*
