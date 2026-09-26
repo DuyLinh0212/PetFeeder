@@ -24,3 +24,5 @@ build/
 *.docx
 GIAO_VIEC_*.md
 PHAN_CONG_*.md
+system-flow.png
+*.gs
