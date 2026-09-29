@@ -1,16 +1,18 @@
 require('dotenv').config();
 
+const mqttTopicPrefix = process.env.MQTT_TOPIC_PREFIX || 'duylinh0212/petfeeder/v1';
+
 module.exports = {
   port: parseInt(process.env.PORT || '3000', 10),
   mqtt: {
-    brokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://127.0.0.1:1883',
+    brokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://broker.emqx.io:1883',
     topics: {
-      command: 'petfeeder/command',
-      schedulesSync: 'petfeeder/schedules/sync',
-      config: 'petfeeder/config',
-      telemetry: 'petfeeder/telemetry',
-      events: 'petfeeder/events',
-      alerts: 'petfeeder/alerts'
+      command: `${mqttTopicPrefix}/command`,
+      schedulesSync: `${mqttTopicPrefix}/schedules/sync`,
+      config: `${mqttTopicPrefix}/config`,
+      telemetry: `${mqttTopicPrefix}/telemetry`,
+      events: `${mqttTopicPrefix}/events`,
+      alerts: `${mqttTopicPrefix}/alerts`
     }
   },
   device: {

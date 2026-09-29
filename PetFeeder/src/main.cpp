@@ -35,29 +35,39 @@ HX711 scale;
 const float HOP_CHUA_CAO_CM   = 25.0;  // Chiều cao tối đa của hộp chứa
 const float NGUONG_HET_HAT_CM = 20.0;  // Khoảng cách tới hạt >= 20cm là hết hạt
 
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+// Wokwi không tự thay đổi HC-SR04/HX711 khi servo quay. Mô phỏng một hộp
+// 500g đang có khoảng 52% hạt (khớp distance 12cm trong diagram.json).
+const float SIM_HOPPER_CAPACITY_G = 500.0;
+const float SIM_INITIAL_HOPPER_G  = 500.0;
+const float SIM_PULSE_GRAMS       = 5.0;
+float simulatedHopperGrams        = SIM_INITIAL_HOPPER_G;
+float simulatedBowlWeightGrams    = 0.0;
+#endif
+
 // ===================== CẤU HÌNH MẠNG & MQTT =====================
 // Mô phỏng Wokwi dùng WiFi ảo "Wokwi-GUEST", không mật khẩu
 const char* WIFI_SSID     = "Wokwi-GUEST";
 const char* WIFI_PASSWORD = "";
 
-// Cấu hình MQTT Broker:
-// 1) Nếu chạy Mosquitto trên máy/WSL:
-//    - Khi test mạch thật hoặc Wokwi có Wokwi IoT Gateway: dùng IP máy (vd: "192.168.1.50" hoặc "10.0.2.2")
-// 2) Mặc định: hỗ trợ kết nối trực tiếp Mosquitto máy local hoặc public test broker
-#define MQTT_SERVER       "10.0.2.2" // Hoặc "broker.emqx.io" khi test Wokwi web trực tiếp
+// Public MQTT broker dùng chung cho Wokwi Community và backend.
+// Đổi sang broker riêng có authentication khi triển khai production.
+#define MQTT_SERVER       "broker.emqx.io"
 #define MQTT_PORT         1883
 #define MQTT_CLIENT_ID    "ESP32_PetFeeder_Client"
+#define MQTT_TOPIC_PREFIX "duylinh0212/petfeeder/v1"
 
 // MQTT Topics
-const char* TOPIC_COMMAND   = "petfeeder/command";
-const char* TOPIC_SCHEDULES = "petfeeder/schedules/sync";
-const char* TOPIC_CONFIG    = "petfeeder/config";
-const char* TOPIC_TELEMETRY = "petfeeder/telemetry";
-const char* TOPIC_EVENTS    = "petfeeder/events";
-const char* TOPIC_ALERTS    = "petfeeder/alerts";
+const char* TOPIC_COMMAND   = MQTT_TOPIC_PREFIX "/command";
+const char* TOPIC_SCHEDULES = MQTT_TOPIC_PREFIX "/schedules/sync";
+const char* TOPIC_CONFIG    = MQTT_TOPIC_PREFIX "/config";
+const char* TOPIC_TELEMETRY = MQTT_TOPIC_PREFIX "/telemetry";
+const char* TOPIC_EVENTS    = MQTT_TOPIC_PREFIX "/events";
+const char* TOPIC_ALERTS    = MQTT_TOPIC_PREFIX "/alerts";
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+String mqttClientId = MQTT_CLIENT_ID;
 
 // ===================== QUẢN LÝ LỊCH CỤC BỘ (FR-04) =====================
 struct LocalSchedule {
@@ -113,6 +123,10 @@ void beep(int count, int delayMs) {
 
 // ===================== ĐỌC CẢM BIẾN =====================
 float readDistanceCM() {
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+  float level = constrain(simulatedHopperGrams / SIM_HOPPER_CAPACITY_G, 0.0, 1.0);
+  return HOP_CHUA_CAO_CM * (1.0 - level);
+#else
   digitalWrite(PIN_TRIG, LOW);
   delayMicroseconds(2);
   digitalWrite(PIN_TRIG, HIGH);
@@ -123,9 +137,13 @@ float readDistanceCM() {
   if (duration == 0) return HOP_CHUA_CAO_CM;
   float dist = duration * 0.034 / 2.0;
   return constrain(dist, 2.0, HOP_CHUA_CAO_CM);
+#endif
 }
 
 float readWeightGram() {
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+  return simulatedBowlWeightGrams;
+#else
   if (scale.is_ready()) {
     long reading = scale.get_units(2);
     float weight = (float)reading / 420.0;
@@ -133,12 +151,29 @@ float readWeightGram() {
     return weight;
   }
   return 0.0;
+#endif
 }
+
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+void simulateDispensePulse(int targetPortion, float initialWeight, float currentWeight) {
+  float delivered = currentWeight - initialWeight;
+  float remaining = targetPortion - delivered;
+  if (remaining <= 0.0 || simulatedHopperGrams <= 0.0) return;
+
+  float dispensed = min(SIM_PULSE_GRAMS, min(remaining, simulatedHopperGrams));
+  simulatedHopperGrams -= dispensed;
+  simulatedBowlWeightGrams += dispensed;
+
+  Serial.printf("[SIM] Da mo phong %.1fg | Kho con: %.1fg | Bat: %.1fg\n",
+                dispensed, simulatedHopperGrams, simulatedBowlWeightGrams);
+}
+#endif
 
 // ===================== MÀN HÌNH OLED =====================
 void updateOLED(float distance, float weight, String status) {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
+  display.setTextWrap(false);
 
   // Header
   display.setTextSize(1);
@@ -154,32 +189,33 @@ void updateOLED(float distance, float weight, String status) {
 
   // Mức hạt
   display.setCursor(0, 13);
-  display.print("Muc hat: ");
+  display.print("Hat: ");
   if (distance >= NGUONG_HET_HAT_CM) {
-    display.print("HET HAT!");
+    display.print("HET HAT");
   } else {
     int percent = constrain((int)((HOP_CHUA_CAO_CM - distance) / HOP_CHUA_CAO_CM * 100), 0, 100);
     display.print(percent);
-    display.print("% (");
+    display.print("% ");
     display.print((int)distance);
-    display.print("cm)");
+    display.print("cm");
   }
 
   // Khối lượng bát
   display.setCursor(0, 26);
-  display.print("Bat an : ");
+  display.print("Bat: ");
   display.print(weight, 1);
   display.print(" g");
 
   // Trạng thái hệ thống
   display.setCursor(0, 39);
-  display.print("Tr.thai: ");
+  display.print("TT: ");
+  if (status.length() > 15) status = status.substring(0, 15);
   display.print(status);
 
   // Hướng dẫn thao tác tại chỗ
   display.drawLine(0, 52, 128, 52, SSD1306_WHITE);
   display.setCursor(0, 55);
-  display.print("Nhan: Cho an | Giu: Over");
+  display.print("Nhan=AN  Giu=OVR");
 
   display.display();
 }
@@ -281,9 +317,15 @@ bool performFeeding(int targetPortion, bool isOverride, String source) {
     servoFeed.write(0);
     delay(400);
 
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+    simulateDispensePulse(targetPortion, initialWeight, currentWeight);
+#endif
     currentWeight = readWeightGram();
     float pulseGain = currentWeight - weightBeforePulse;
     Serial.printf("[PULSE %d] Can nang: %.1fg (+%.1fg)\n", pulses, currentWeight, pulseGain);
+
+    // Cập nhật ngay sau mỗi xung để Mobile/backend thấy mức hạt giảm theo thời gian thực.
+    publishTelemetry();
 
     // Kiểm tra kẹt hạt: khối lượng không tăng đáng kể (Section 2.3.3)
     if (pulseGain < 1.0) {
@@ -329,6 +371,7 @@ bool performFeeding(int targetPortion, bool isOverride, String source) {
   Serial.printf("[THANH CONG] Da cap: %.1fg / Muc tieu: %dg\n", totalDispensed, targetPortion);
 
   publishFeedEvent("SUCCESS", source, targetPortion, totalDispensed, "Cho an thanh cong!");
+  publishTelemetry();
   delay(1500);
   systemStatus = "SAN SANG";
   return true;
@@ -369,7 +412,7 @@ void reconnectMQTT() {
   lastMQTTReconnect = now;
 
   Serial.printf("[MQTT] Dang ket noi toi Broker: %s:%d...\n", MQTT_SERVER, MQTT_PORT);
-  if (mqttClient.connect(MQTT_CLIENT_ID)) {
+  if (mqttClient.connect(mqttClientId.c_str())) {
     Serial.println("[MQTT] Da ket noi thanh cong!");
 
     // Subscribe các topic điều khiển
@@ -464,7 +507,8 @@ void publishTelemetry() {
 
   char buffer[256];
   serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_TELEMETRY, buffer);
+  // Retain bản mới nhất để backend nhận lại ngay sau khi reconnect.
+  mqttClient.publish(TOPIC_TELEMETRY, buffer, true);
 }
 
 // ===================== GỬI SỰ KIỆN CHO ĂN (FEED EVENT) =====================
@@ -518,6 +562,13 @@ void setup() {
   Serial.println("\n=============================================");
   Serial.println("  HE THONG CHO THU CUNG AN TU DONG - NHOM 7  ");
   Serial.println("=============================================");
+
+  // Tránh hai phiên Wokwi dùng chung client ID làm broker đá mất kết nối.
+  uint64_t chipId = ESP.getEfuseMac();
+  mqttClientId = String(MQTT_CLIENT_ID) + "_" +
+                 String((uint32_t)(chipId >> 32), HEX) +
+                 String((uint32_t)chipId, HEX);
+  Serial.printf("[MQTT] Client ID: %s\n", mqttClientId.c_str());
 
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);

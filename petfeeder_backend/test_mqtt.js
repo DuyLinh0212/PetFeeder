@@ -1,5 +1,6 @@
 const mqtt = require('mqtt');
-const client = mqtt.connect('mqtt://127.0.0.1:1883');
+const config = require('./src/config');
+const client = mqtt.connect(config.mqtt.brokerUrl);
 
 client.on('connect', () => {
   console.log('Test simulator connected to Mosquitto');
@@ -13,8 +14,8 @@ client.on('connect', () => {
     rssi: -55,
     uptime: 120
   };
-  client.publish('petfeeder/telemetry', JSON.stringify(telemetry), () => {
-    console.log('Published telemetry to petfeeder/telemetry');
+  client.publish(config.mqtt.topics.telemetry, JSON.stringify(telemetry), () => {
+    console.log(`Published telemetry to ${config.mqtt.topics.telemetry}`);
     const feedEvent = {
       event: 'FEED_RESULT',
       status: 'SUCCESS',
@@ -24,8 +25,8 @@ client.on('connect', () => {
       timestamp: Math.floor(Date.now() / 1000),
       message: 'Cấp thức ăn thành công (Closed-loop 41.2g)'
     };
-    client.publish('petfeeder/events', JSON.stringify(feedEvent), () => {
-      console.log('Published event to petfeeder/events');
+    client.publish(config.mqtt.topics.events, JSON.stringify(feedEvent), () => {
+      console.log(`Published event to ${config.mqtt.topics.events}`);
       setTimeout(() => {
         client.end();
         process.exit(0);
