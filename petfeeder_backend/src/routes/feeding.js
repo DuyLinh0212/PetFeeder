@@ -52,6 +52,7 @@ router.post('/feed', (req, res) => {
 
     // Gửi lệnh qua MQTT xuống ESP32
     const cmdPayload = mqttClient.publishFeedCommand({
+      command_id: req.body.command_id,
       portion,
       override,
       source: 'app'
