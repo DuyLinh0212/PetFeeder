@@ -1,1186 +1,749 @@
-#include <Arduino.h>
-#include <Wire.h>
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include <Adafruit_GFX.h>
+#include "feeding_controller.h"
 #include <Adafruit_SSD1306.h>
+#include <Arduino.h>
+#include <ArduinoJson.h>
 #include <ESP32Servo.h>
-#include "HX711.h"
+#include <HX711.h>
+#include <Preferences.h>
+#include <PubSubClient.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <deque>
+#include <limits>
 #include <time.h>
+#include <type_traits>
 
-// ====================================================================================
-//                    CẤU HÌNH PHẦN CỨNG & CHÂN (PIN MAPPING)
-// ====================================================================================
-#define PIN_TRIG        5
-#define PIN_ECHO        18
-#define PIN_HX711_DT    19
-#define PIN_HX711_SCK   23
-#define PIN_BUTTON      4
-#define PIN_SERVO_FEED  13
-#define PIN_SERVO_ANTI  12
-#define PIN_LED_GREEN   2
-#define PIN_LED_RED     15
-#define PIN_BUZZER      14
-
-// OLED 0.96 inch SSD1306 I2C (SDA = GPIO 21, SCL = GPIO 22)
-#define SCREEN_WIDTH    128
-#define SCREEN_HEIGHT   64
-#define OLED_RESET      -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-Servo servoFeed;
-Servo servoAnti;
-HX711 scale;
-
-// ====================================================================================
-//                    NGƯỠNG & GIỚI HẠN AN TOÀN HỆ THỐNG
-// ====================================================================================
-const float HOP_CHUA_CAO_CM         = 25.0;  // Chiều cao tối đa bồn chứa
-const float NGUONG_HET_HAT_CM       = 20.0;  // Khoảng cách >= 20cm là hết hạt (C05)
-const float MAX_BOWL_CAPACITY_G     = 150.0; // Dung tích tối đa của bát ăn để chống tràn (N01)
-const float MAX_DAILY_PORTION_G     = 200.0; // Định mức hạt tối đa cho phép trong ngày (N02)
-const int   MAX_DAILY_FEEDS         = 6;     // Số lần cho ăn tối đa trong ngày (N02)
-const float BOWL_MISSING_THRESHOLD  = -10.0; // Số đo âm sâu biểu thị bát bị lấy ra (N09)
-const int   MAX_FEED_PULSES         = 15;    // Giới hạn số nhịp mở servo tối đa (N05)
-const float COARSE_FINE_THRESHOLD_G = 10.0;  // Chuyển sang nhịp vi chỉnh khi cách đích <= 10g (N06)
-const float OVER_PORTION_TOLERANCE  = 3.0;   // Ngưỡng sai số vượt mức cho phép (N06)
-
-// ====================================================================================
-//                    MÔ PHỎNG WOKWI (SIMULATION VARIABLES)
-// ====================================================================================
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-const float SIM_HOPPER_CAPACITY_G = 500.0;
-const float SIM_INITIAL_HOPPER_G  = 500.0;
-const float SIM_PULSE_GRAMS       = 5.0;
-float simulatedHopperGrams        = SIM_INITIAL_HOPPER_G;
-float simulatedBowlWeightGrams    = 0.0;
+// Physical drivers never silently switch to simulated readings.
+#define PIN_BUTTON 4
+#define PIN_TRIG 5
+#define PIN_ECHO 18
+#define PIN_HX711_DT 19
+#define PIN_HX711_SCK 23
+#define PIN_SERVO_FEED 13
+#define PIN_SERVO_ANTI 12
+#define PIN_LED_GREEN 2
+#define PIN_LED_RED 15
+#define PIN_BUZZER 14
+#ifndef PETFEEDER_BOWL_PRESENT_PIN
+#define PETFEEDER_BOWL_PRESENT_PIN -1
 #endif
-
-// ====================================================================================
-//                    CẤU HÌNH MẠNG & MQTT
-// ====================================================================================
-const char* WIFI_SSID     = "Wokwi-GUEST";
-const char* WIFI_PASSWORD = "";
-
-#define MQTT_SERVER       "broker.emqx.io"
-#define MQTT_PORT         1883
-#define MQTT_CLIENT_ID    "ESP32_PetFeeder_Client"
-#define MQTT_TOPIC_PREFIX "duylinh0212/petfeeder/v1"
-
-// PubSubClient's default 256 bytes cannot hold telemetry plus its MQTT topic/header.
-const uint16_t MQTT_PACKET_BUFFER_BYTES = 1024;
-const uint16_t MQTT_KEEP_ALIVE_SECONDS = 60;
-
-const char* TOPIC_COMMAND   = MQTT_TOPIC_PREFIX "/command";
-const char* TOPIC_SCHEDULES = MQTT_TOPIC_PREFIX "/schedules/sync";
-const char* TOPIC_CONFIG    = MQTT_TOPIC_PREFIX "/config";
-const char* TOPIC_TELEMETRY = MQTT_TOPIC_PREFIX "/telemetry";
-const char* TOPIC_EVENTS    = MQTT_TOPIC_PREFIX "/events";
-const char* TOPIC_ALERTS    = MQTT_TOPIC_PREFIX "/alerts";
-
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
-String mqttClientId = MQTT_CLIENT_ID;
-
-// ====================================================================================
-//                    CẤU TRÚC DỮ LIỆU & BIẾN QUẢN LÝ PHIÊN CẤP
-// ====================================================================================
-struct LocalSchedule {
-  char id[20];
-  int hour;
-  int minute;
-  int portion;
+#ifndef PETFEEDER_LID_PIN
+#define PETFEEDER_LID_PIN -1
+#endif
+const char *PREFIX = "duylinh0212/petfeeder/v1";
+const String commandTopic = String(PREFIX) + "/command";
+const String configTopic = String(PREFIX) + "/config/v2";
+const String scheduleTopic = String(PREFIX) + "/schedules/sync";
+const String telemetryTopic = String(PREFIX) + "/telemetry";
+const String eventTopic = String(PREFIX) + "/events";
+WiFiClient network;
+PubSubClient mqtt(network);
+Preferences prefs;
+HX711 scale;
+Servo feedServo, antiServo;
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+feeder::Controller controller;
+bool oledReady = false, nvsReady = false;
+uint32_t lastTelemetry = 0, lastConnect = 0, lastScreen = 0;
+uint32_t bootSequence = 0, localSequence = 0, bowlSequence = 0;
+String clientId;
+std::deque<String> outbox;
+String serialLine;
+double scaleFactor = 0, scaleOffset = 0;
+std::vector<double> samples;
+uint32_t lastSample = 0, lastScaleGood = 0, lastDistance = 0;
+unsigned ultrasonicMisses = 0, sampleSequence = 0;
+volatile uint32_t buttonDownAt = 0, buttonDuration = 0;
+volatile bool buttonReady = false, buttonDown = false;
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+struct SimInputs {
+  double weight = 0, distance = 12, pulseGrams = 5, lateDrop = 0, noise = 0;
+  bool scaleOnline = true, ultrasonicOnline = true, present = true,
+       presenceAvailable = true, lid = false;
+  int jamAfterPulses = -1;
+} sim;
+unsigned simPulses = 0;
+int previousFeedAngle = 0;
+#endif
+struct Schedule {
+  String id;
+  int hour, minute, portion;
   bool enabled;
-  int lastTriggerDay;
+  int daysMask;
+  int lastDay = -1;
 };
+std::vector<Schedule> schedules;
 
-#define MAX_SCHEDULES 10
-LocalSchedule localSchedules[MAX_SCHEDULES];
-int scheduleCount = 0;
+uint64_t epochNow() {
+  time_t t = time(nullptr);
+  return t > 1609459200 ? (uint64_t)t : 0;
+}
+int dayNow() {
+  struct tm t;
+  return getLocalTime(&t, 0) ? (t.tm_year + 1900) * 1000 + t.tm_yday : -1;
+}
+#define CONFIG_FIELDS(X)                                                       \
+  X("bowl_capacity_g", bowlCapacity)                                           \
+  X("max_daily_portion_g", dailyLimit)                                         \
+  X("portion_tolerance_g", tolerance)                                          \
+  X("fine_threshold_g", fineThreshold) X("stable_spread_g", stableSpread) X(   \
+      "idle_delta_g", idleDelta) X("interference_drop_g", interferenceDrop)    \
+      X("min_pulse_gain_g", minPulseGain) X("empty_threshold_cm",              \
+                                            emptyDistance)                     \
+          X("tank_height_cm", hopperHeight) X("refill_jump_cm", refillJump)    \
+              X("safe_interval_sec", safeInterval)                             \
+                  X("max_duration_ms", maxDuration) X("stable_timeout_ms",     \
+                                                      stableTimeout)           \
+                      X("coarse_open_ms", coarseOpen) X("coarse_settle_ms",    \
+                                                        coarseSettle)          \
+                          X("fine_open_ms", fineOpen) X("fine_settle_ms",      \
+                                                        fineSettle)            \
+                              X("anti_step_ms", antiStep) X("sample_stale_ms", \
+                                                            sampleStale)       \
+                                  X("max_feed_pulses", maxPulses)              \
+                                      X("anti_jam_max_retries", maxRecoveries) \
+                                          X("max_daily_feeds", dailyFeeds)
 
-// Trạng thái khóa & an toàn
-volatile bool isDispensing      = false; // Mutex khóa phiên cấp (C03, N03)
-bool isSafetyLockout            = false; // Khóa an toàn chất lượng thức ăn (C08)
-bool isHopperVerified           = true;  // Cờ xác minh nạp hạt đúng chủng loại (C07)
-String foodQualityStatus        = "UNVERIFIED"; // Luôn giữ UNVERIFIED khi chưa có cảm biến chuyên dụng (C08)
-
-// Quản lý hạn mức ngày (N02)
-float dailyDispensedGrams       = 0.0;
-int   dailyFeedCount            = 0;
-int   currentDayTracker         = -1;
-
-// Giám sát biến động bát ngoài phiên cấp (N13, N14)
-float lastIdleBowlWeight        = 0.0;
-unsigned long lastIdleCheckMs   = 0;
-
-// Hỗ trợ cấp bù sau sự cố (N04)
-float lastInterruptedTarget     = 0.0;
-float lastInterruptedDelivered  = 0.0;
-char  lastProcessedCommandId[40] = "";
-
-// Chống ăn trùng cơ bản (180s)
-unsigned long lastFeedSuccessMs = 0;
-unsigned long safeIntervalMs    = 180000;
-String systemStatus             = "KHOI DONG";
-
-// Nút bấm
-unsigned long buttonPressTime   = 0;
-bool isButtonPressed           = false;
-
-// Chu kỳ cập nhật
-unsigned long lastDisplayUpdate   = 0;
-unsigned long lastTelemetryUpdate = 0;
-unsigned long lastMQTTReconnect   = 0;
-
-// ====================================================================================
-//                    MÃ TRẠNG THÁI CẢM BIẾN (ENUMS)
-// ====================================================================================
-enum ScaleStatus {
-  SCALE_OK,
-  SCALE_UNSTABLE,
-  SCALE_OFFLINE,
-  SCALE_BOWL_MISSING
-};
-
-enum UltrasonicStatus {
-  ULTRASONIC_OK,
-  ULTRASONIC_EMPTY,
-  ULTRASONIC_TIMEOUT
-};
-
-// ====================================================================================
-//                    NGUYÊN MẪU HÀM
-// ====================================================================================
-void beep(int count, int delayMs);
-UltrasonicStatus readDistanceChecked(float &outDistance);
-ScaleStatus readStableWeight(float &outWeight, int maxWaitMs = 3000);
-float getFastWeight();
-float getFastDistance();
-void updateOLED(float distance, float weight, String status);
-void triggerAntiJam();
-bool performFeeding(int targetPortion, bool isOverride, String source, const char* cmdId = nullptr);
-void setupWiFi();
-void reconnectMQTT();
-void mqttCallback(char* topic, byte* message, unsigned int length);
-void publishTelemetry();
-void publishFeedEvent(const char* cmdId, String status, String source, int targetPortion,
-                      float actualWeight, const char* errorCode, String message);
-void publishBowlEvent(String eventType, float deltaG, float currentWeightG, String cause);
-void checkLocalSchedules();
-void checkDayRollover();
-void monitorIdleBowl();
-
-// ====================================================================================
-//                    ÂM THANH BUZZER
-// ====================================================================================
-void beep(int count, int delayMs) {
-  for (int i = 0; i < count; i++) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(delayMs);
-    digitalWrite(PIN_BUZZER, LOW);
-    if (i < count - 1) delay(delayMs);
+void writeResult(JsonObject obj, const feeder::Result &r) {
+  obj["command_id"] = r.command.id;
+  obj["source"] = r.command.source;
+  obj["command"] = r.command.action;
+  obj["retry_of"] = r.command.retryOf;
+  obj["root_command_id"] = r.rootId;
+  obj["status"] = r.status;
+  obj["error_code"] = r.error;
+  obj["target_portion_g"] = r.target;
+  obj["root_target_g"] = r.rootTarget;
+  obj["portion_tolerance_g"] = r.tolerance;
+  if (r.measurementValid)
+    obj["actual_weight_g"] = r.actual;
+  else
+    obj["actual_weight_g"] = nullptr;
+  obj["last_confirmed_delivered_g"] = r.actual;
+  obj["cumulative_delivered_g"] = r.cumulative;
+  obj["measurement_valid"] = r.measurementValid;
+  obj["last_bowl_weight_g"] = r.bowl;
+  obj["started_at"] = r.startedAt;
+  obj["completed_at"] = r.completedAt;
+  obj["revision"] = r.revision;
+  obj["event_id"] = r.eventId();
+}
+feeder::Result readResult(JsonObject obj) {
+  feeder::Result r;
+  r.command.id = obj["command_id"].as<std::string>();
+  r.command.source = obj["source"].as<std::string>();
+  r.command.action = obj["command"].as<std::string>();
+  r.command.retryOf = obj["retry_of"].as<std::string>();
+  r.rootId = obj["root_command_id"].as<std::string>();
+  r.status = obj["status"].as<std::string>();
+  r.error = obj["error_code"].as<std::string>();
+  r.target = obj["target_portion_g"] | 0.;
+  r.command.target = r.target;
+  r.rootTarget = obj["root_target_g"] | r.target;
+  r.tolerance = obj["portion_tolerance_g"] | 3.;
+  r.actual = obj["last_confirmed_delivered_g"] | 0.;
+  r.cumulative = obj["cumulative_delivered_g"] | 0.;
+  r.measurementValid = obj["measurement_valid"] | false;
+  r.bowl = obj["last_bowl_weight_g"] | 0.;
+  r.startedAt = obj["started_at"] | (uint64_t)0;
+  r.completedAt = obj["completed_at"] | (uint64_t)0;
+  r.revision = obj["revision"] | 0;
+  return r;
+}
+bool saveState() {
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+  // Simulation has a separate namespace and cannot overwrite physical
+  // calibration or budgets.
+#endif
+  if (!nvsReady)
+    return false;
+  JsonDocument doc;
+  doc["version"] = 2;
+  doc["day"] = controller.day;
+  doc["charged"] = controller.charged;
+  doc["count"] = controller.feedCount;
+  doc["last_feed"] = controller.lastFeedAt;
+  doc["lockdown"] = controller.lockdown;
+  doc["verified"] = controller.refillVerified;
+  JsonObject cfg = doc["config"].to<JsonObject>();
+#define WRITE_CONFIG(key, member) cfg[key] = controller.config.member;
+  CONFIG_FIELDS(WRITE_CONFIG)
+#undef WRITE_CONFIG
+  doc["calibration_factor"] = scaleFactor;
+  doc["calibration_offset"] = scaleOffset;
+  JsonArray history = doc["recent"].to<JsonArray>();
+  // Persist the last 8 physical sessions as well as a pending operation.
+  // Rejected floods cannot evict them.
+  unsigned count = 0;
+  for (auto it = controller.recent.rbegin();
+       it != controller.recent.rend() && count < 8; ++it) {
+    if (!it->startedAt)
+      continue;
+    writeResult(history.add<JsonObject>(), *it);
+    count++;
+  }
+  if (controller.busy())
+    writeResult(doc["active"].to<JsonObject>(), controller.active);
+  String bytes;
+  serializeJson(doc, bytes);
+  if (bytes.length() > 7000)
+    return false;
+  return prefs.putBytes("state", bytes.c_str(), bytes.length()) ==
+         bytes.length();
+}
+void enqueue(const String &payload) {
+  if (outbox.size() >= 64) {
+    Serial.println(
+        "[MQTT ERROR] Outbox full; operator reconciliation required");
+    controller.lockdown = true;
+    return;
+  }
+  outbox.push_back(payload);
+}
+void loadState() {
+  JsonDocument doc;
+  const size_t length = prefs.getBytesLength("state");
+  std::vector<char> stored(length + 1, 0);
+  if (length)
+    prefs.getBytes("state", stored.data(), length);
+  if (length && deserializeJson(doc, stored.data(), length)) {
+    controller.lockdown = true;
+    return;
+  }
+  controller.day = doc["day"] | -1;
+  controller.charged = doc["charged"] | 0.;
+  controller.feedCount = doc["count"] | 0;
+  controller.lastFeedAt = doc["last_feed"] | (uint64_t)0;
+  controller.lockdown = doc["lockdown"] | false;
+  controller.refillVerified = doc["verified"] | false;
+  feeder::Config next = controller.config;
+  JsonObject cfg = doc["config"];
+#define LOAD_CONFIG(key, member)                                               \
+  if (!cfg[key].isNull())                                                      \
+    next.member = cfg[key].as<decltype(next.member)>();
+  CONFIG_FIELDS(LOAD_CONFIG)
+#undef LOAD_CONFIG
+  if (next.valid())
+    controller.config = next;
+  else
+    controller.lockdown = true;
+  scaleFactor = doc["calibration_factor"] | 0.;
+  scaleOffset = doc["calibration_offset"] | 0.;
+  for (JsonObject obj : doc["recent"].as<JsonArray>())
+    controller.recent.insert(controller.recent.begin(), readResult(obj));
+  if (doc["active"].is<JsonObject>()) {
+    auto r = readResult(doc["active"]);
+    r.status = "INTERRUPTED";
+    r.error = "RESTART_RECONCILIATION_REQUIRED";
+    r.measurementValid = false;
+    r.revision++;
+    controller.lockdown = true;
+    bool replaced = false;
+    for (auto &prior : controller.recent)
+      if (prior.command.id == r.command.id) {
+        prior = r;
+        replaced = true;
+      }
+    if (!replaced)
+      controller.recent.push_back(r);
+    controller.onResult(r);
   }
 }
-
-// ====================================================================================
-//                    ĐỌC CẢM BIẾN SIÊU ÂM CÓ KIỂM TRA LỖI (N11, C05, C07)
-// ====================================================================================
-UltrasonicStatus readDistanceChecked(float &outDistance) {
-  // Thử đọc tối đa 3 lần để phân biệt Timeout với Hết hạt thật
-  for (int attempt = 0; attempt < 3; attempt++) {
+void IRAM_ATTR buttonEdge() {
+  const uint32_t now = millis();
+  if (digitalRead(PIN_BUTTON) == LOW) {
+    if (!buttonDown) {
+      buttonDown = true;
+      buttonDownAt = now;
+    }
+  } else if (buttonDown) {
+    buttonDown = false;
+    buttonDuration = now - buttonDownAt;
+    buttonReady = true;
+  }
+}
+feeder::Command localCommand(const char *source, double target = 30) {
+  feeder::Command c;
+  c.id = (clientId + "_" + String(bootSequence) + "_" + String(++localSequence))
+             .c_str();
+  c.source = source;
+  c.target = target;
+  return c;
+}
+void sampleInputs(uint32_t now) {
+  if (now - lastSample >= 50) {
+    lastSample = now;
+    bool got = false;
+    double weight = 0;
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+    got = sim.scaleOnline;
+    weight = sim.weight + ((sampleSequence++ % 2) ? sim.noise : -sim.noise);
+    controller.reading.presenceAvailable = sim.presenceAvailable;
+    controller.reading.bowlPresent = sim.present;
+    controller.reading.lidOpen = sim.lid;
+#else
+    controller.reading.presenceAvailable = PETFEEDER_BOWL_PRESENT_PIN >= 0;
+    controller.reading.bowlPresent =
+        PETFEEDER_BOWL_PRESENT_PIN >= 0 &&
+        digitalRead(PETFEEDER_BOWL_PRESENT_PIN) == LOW;
+    controller.reading.lidOpen =
+        PETFEEDER_LID_PIN >= 0 && digitalRead(PETFEEDER_LID_PIN) == HIGH;
+    if (scale.is_ready() && std::isfinite(scaleFactor) &&
+        std::fabs(scaleFactor) > 0.000001) {
+      weight = (scale.read() - scaleOffset) / scaleFactor;
+      got = std::isfinite(weight);
+    }
+#endif
+    if (got) {
+      lastScaleGood = now;
+      controller.reading.weight = weight;
+      controller.reading.weightAt = now;
+      controller.reading.scale = true;
+      samples.push_back(weight);
+      if (samples.size() > 5)
+        samples.erase(samples.begin());
+      controller.reading.stable =
+          samples.size() == 5 &&
+          *std::max_element(samples.begin(), samples.end()) -
+                  *std::min_element(samples.begin(), samples.end()) <=
+              controller.config.stableSpread;
+    } else {
+      samples.clear();
+      controller.reading.stable = false;
+      if (now - lastScaleGood >= 1000)
+        controller.reading.scale = false;
+    }
+  }
+  if (now - lastDistance >= 100) {
+    lastDistance = now;
+    bool got;
+    double distance;
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+    got = sim.ultrasonicOnline;
+    distance = sim.distance;
+#else
     digitalWrite(PIN_TRIG, LOW);
     delayMicroseconds(2);
     digitalWrite(PIN_TRIG, HIGH);
     delayMicroseconds(10);
     digitalWrite(PIN_TRIG, LOW);
-
-    long duration = pulseIn(PIN_ECHO, HIGH, 30000); // 30ms timeout (~5m)
-    if (duration > 0) {
-      float dist = duration * 0.034 / 2.0;
-      outDistance = constrain(dist, 2.0, HOP_CHUA_CAO_CM);
-
-      if (outDistance >= NGUONG_HET_HAT_CM) {
-        return ULTRASONIC_EMPTY;
-      }
-      return ULTRASONIC_OK;
-    }
-    delay(10);
-  }
-
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-  // Nếu cảm biến vật lý trên Wokwi không trả duration nhưng đang ở chế độ giả lập
-  float level = constrain(simulatedHopperGrams / SIM_HOPPER_CAPACITY_G, 0.0, 1.0);
-  outDistance = HOP_CHUA_CAO_CM * (1.0 - level);
-  if (outDistance >= NGUONG_HET_HAT_CM) return ULTRASONIC_EMPTY;
-  return ULTRASONIC_OK;
-#else
-  // Cả 3 lần đều duration == 0 -> Lỗi mất tín hiệu cảm biến (N11)
-  outDistance = -1.0;
-  return ULTRASONIC_TIMEOUT;
+    const long duration = pulseIn(PIN_ECHO, HIGH, 30000);
+    got = duration > 0;
+    distance = duration * 0.034 / 2.0;
 #endif
+    if (got && std::isfinite(distance) && distance >= 0) {
+      ultrasonicMisses = 0;
+      controller.reading.distance = distance;
+      controller.reading.distanceAt = now;
+      controller.reading.ultrasonic = true;
+    } else if (++ultrasonicMisses >= 3)
+      controller.reading.ultrasonic = false;
+  }
 }
-
-float getFastDistance() {
-  float d = 0;
-  UltrasonicStatus st = readDistanceChecked(d);
-  if (st == ULTRASONIC_TIMEOUT) return -1.0;
-  return d;
-}
-
-// ====================================================================================
-//                    ĐỌC CÂN NẶNG HX711 CÓ LỌC ỔN ĐỊNH & KIỂM TRA LỖI (N08, N09, N10)
-// ====================================================================================
-ScaleStatus readStableWeight(float &outWeight, int maxWaitMs) {
-  unsigned long startWait = millis();
-
-  while (millis() - startWait < (unsigned long)maxWaitMs) {
-    if (!scale.is_ready()) {
-#if !defined(PETFEEDER_WOKWI_SIMULATION)
-      delay(50);
-      continue;
-#endif
-    }
-
-    // Lấy 5 mẫu liên tiếp để kiểm tra độ ổn định (N08)
-    float samples[5];
-    bool readSuccess = true;
-
-    for (int i = 0; i < 5; i++) {
-      if (scale.is_ready()) {
-        long reading = scale.get_units(1);
-        samples[i] = (float)reading / 420.0;
-      } else {
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-        samples[i] = simulatedBowlWeightGrams;
-#else
-        readSuccess = false;
-        break;
-#endif
-      }
-      delay(30);
-    }
-
-    if (!readSuccess) {
-      delay(50);
-      continue;
-    }
-
-    // Tìm Min & Max trong 5 mẫu
-    float minVal = samples[0];
-    float maxVal = samples[0];
-    float sumVal = 0;
-    for (int i = 0; i < 5; i++) {
-      if (samples[i] < minVal) minVal = samples[i];
-      if (samples[i] > maxVal) maxVal = samples[i];
-      sumVal += samples[i];
-    }
-
-    // 1. Kiểm tra mất bát (N09): Trọng lượng âm sâu < -10g
-    float avgVal = sumVal / 5.0;
-    if (avgVal <= BOWL_MISSING_THRESHOLD) {
-      outWeight = avgVal;
-      return SCALE_BOWL_MISSING;
-    }
-
-    // 2. Kiểm tra độ ổn định (N08): Chênh lệch dao động <= 3.0g
-    if ((maxVal - minVal) <= 3.0) {
-      if (avgVal < 0.0) avgVal = 0.0;
-      outWeight = round(avgVal * 10) / 10.0;
-      return SCALE_OK;
-    }
-
-    // Nếu dao động > 3.0g: Đang rung lắc hoặc thú tì chân, chờ tiếp
-    Serial.printf("[SCALE] Can dao dong: Delta=%.1fg. Dang doi on dinh...\n", (maxVal - minVal));
-    delay(100);
+void applyConfig(JsonObject cfg) {
+  auto next = controller.config;
+  bool numericValid = true, hasNumeric = false;
+#define READ_CONFIG(key, member)                                               \
+  if (!cfg[key].isNull()) {                                                    \
+    hasNumeric = true;                                                         \
+    double v = cfg[key].as<double>();                                          \
+    if (!cfg[key].is<double>() || !std::isfinite(v) ||                         \
+        (std::is_integral<decltype(next.member)>::value &&                     \
+         (v < 0 || v > std::numeric_limits<decltype(next.member)>::max() ||    \
+          std::floor(v) != v)))                                                \
+      numericValid = false;                                                    \
+    else                                                                       \
+      next.member = cfg[key].as<decltype(next.member)>();                      \
   }
-
-  // Hết thời gian chờ mà cân vẫn không sẵn sàng
-  if (!scale.is_ready()) {
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-    outWeight = simulatedBowlWeightGrams;
-    return SCALE_OK;
-#else
-    outWeight = 0;
-    return SCALE_OFFLINE; // N10: Cảm biến mất kết nối
-#endif
-  }
-
-  // Hết thời gian chờ mà cân vẫn chưa ổn định
-  outWeight = 0;
-  return SCALE_UNSTABLE; // N08: Quá thời hạn chờ ổn định
-}
-
-float getFastWeight() {
-  if (scale.is_ready()) {
-    long reading = scale.get_units(1);
-    float w = (float)reading / 420.0;
-    return (w < 0.0) ? 0.0 : w;
-  }
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-  return simulatedBowlWeightGrams;
-#endif
-  return 0.0;
-}
-
-// ====================================================================================
-//                    MÔ PHỎNG XẢ HẠT (WOKWI PULSE)
-// ====================================================================================
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-void simulateDispensePulse(float pulseAmount, int targetPortion, float initialWeight, float currentWeight) {
-  float delivered = currentWeight - initialWeight;
-  float remaining = targetPortion - delivered;
-  if (remaining <= 0.0 || simulatedHopperGrams <= 0.0) return;
-
-  float dispensed = min(pulseAmount, min(remaining, simulatedHopperGrams));
-  simulatedHopperGrams -= dispensed;
-  simulatedBowlWeightGrams += dispensed;
-
-  Serial.printf("[SIM] Mo phong: +%.1fg | Kho con: %.1fg | Bat: %.1fg\n",
-                dispensed, simulatedHopperGrams, simulatedBowlWeightGrams);
-}
-#endif
-
-// ====================================================================================
-//                    MÀN HÌNH OLED SSD1306
-// ====================================================================================
-void updateOLED(float distance, float weight, String status) {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextWrap(false);
-
-  // Header
-  display.setTextSize(1);
-  display.setCursor(6, 0);
-  display.print("PETFEEDER - IOT PRO");
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    display.setCursor(118, 0);
-    display.print(mqttClient.connected() ? "M" : "W");
-  }
-  display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
-
-  // Mức hạt bồn chứa
-  display.setCursor(0, 13);
-  display.print("Hat: ");
-  if (distance < 0) {
-    display.print("LOI CB!");
-  } else if (distance >= NGUONG_HET_HAT_CM) {
-    display.print("HET HAT");
-  } else {
-    int percent = constrain((int)((HOP_CHUA_CAO_CM - distance) / HOP_CHUA_CAO_CM * 100), 0, 100);
-    display.print(percent);
-    display.print("% (");
-    display.print((int)distance);
-    display.print("cm)");
-  }
-
-  // Khối lượng bát
-  display.setCursor(0, 26);
-  display.print("Bat: ");
-  if (weight <= BOWL_MISSING_THRESHOLD) {
-    display.print("MAT BAT!");
-  } else {
-    display.print(weight, 1);
-    display.print("g / 150g");
-  }
-
-  // Trạng thái vận hành
-  display.setCursor(0, 39);
-  display.print("TT: ");
-  if (status.length() > 14) status = status.substring(0, 14);
-  display.print(status);
-
-  // Trạng thái khóa / an toàn & hướng dẫn
-  display.drawLine(0, 52, 128, 52, SSD1306_WHITE);
-  display.setCursor(0, 55);
-  if (isSafetyLockout) {
-    display.print("KHOA AN TOAN!");
-  } else if (!isHopperVerified) {
-    display.print("CHO XAC MINH NGUON");
-  } else {
-    display.print("Nhan=AN  Giu=OVR");
-  }
-
-  display.display();
-}
-
-// ====================================================================================
-//                    CƠ CẤU CHỐNG KẸT NÂNG CAO (N12, Section 2.3.3)
-// ====================================================================================
-void triggerAntiJam() {
-  Serial.println("[ANTI-JAM] Phat hien nghi ket hat! Kich hoat co cau tu phuc hoi...");
-  systemStatus = "XU LY KET!";
-  updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-  
-  digitalWrite(PIN_LED_RED, HIGH);
-  beep(3, 80);
-
-  // Đảo chiều Servo chính (Section 2.3.3)
-  servoFeed.write(120);
-  delay(200);
-
-  // Lắc cơ cấu chống kẹt phụ 3 lần liên tiếp (Section 2.3.3)
-  for (int i = 0; i < 3; i++) {
-    servoAnti.write(45);
-    delay(150);
-    servoAnti.write(135);
-    delay(150);
-  }
-  servoAnti.write(90);
-  servoFeed.write(0);
-  
-  digitalWrite(PIN_LED_RED, LOW);
-}
-
-// ====================================================================================
-//                    KIỂM TRA CHUYỂN NGÀY MỚI (N02 - DAILY RESET)
-// ====================================================================================
-void checkDayRollover() {
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo, 0)) {
-    int currentDay = timeinfo.tm_yday;
-    if (currentDayTracker == -1) {
-      currentDayTracker = currentDay;
-    } else if (currentDay != currentDayTracker) {
-      currentDayTracker = currentDay;
-      dailyDispensedGrams = 0.0;
-      dailyFeedCount = 0;
-      Serial.println("\n>>> [DAILY RESET] Chuyen sang ngay moi 00:00! Reset han muc cho an ngay.");
+  CONFIG_FIELDS(READ_CONFIG)
+#undef READ_CONFIG
+  for (const char *key : {"lockdown", "mark_refill", "verify_refill"}) {
+    if (!cfg[key].isNull() && !cfg[key].is<bool>()) {
+      Serial.println("[CONFIG ERROR] Safety flag must be boolean");
+      return;
     }
   }
-}
-
-// ====================================================================================
-//                    GIÁM SÁT BÁT NGOÀI PHIÊN CẤP (N13: MANUAL REFILL, N14: FOOD DECREASE)
-// ====================================================================================
-void monitorIdleBowl() {
-  if (isDispensing) return;
-
-  unsigned long now = millis();
-  if (now - lastIdleCheckMs < 1500) return; // Kiểm tra mỗi 1.5s
-  lastIdleCheckMs = now;
-
-  float currentW = 0.0;
-  ScaleStatus st = readStableWeight(currentW, 800);
-  if (st != SCALE_OK) return;
-
-  if (lastIdleBowlWeight == 0.0) {
-    lastIdleBowlWeight = currentW;
+  if (!numericValid || !next.valid()) {
+    Serial.println("[CONFIG ERROR] Invalid config");
     return;
   }
-
-  float delta = currentW - lastIdleBowlWeight;
-
-  // N13: Phát hiện chủ đổ thêm thức ăn trực tiếp vào bát (> 5g)
-  if (delta > 5.0) {
-    Serial.printf("\n[BOWL MONITOR] Phat hien them thuc an vao bat: %.1fg -> %.1fg (+%.1fg)\n",
-                  lastIdleBowlWeight, currentW, delta);
-    publishBowlEvent("MANUAL_REFILL", delta, currentW, "OWNER_REFILL");
-    lastIdleBowlWeight = currentW;
-  }
-  // N14: Phát hiện khối lượng bát bị giảm (> 5g) -> Báo cáo UNKNOWN_CAUSE
-  else if (delta < -5.0) {
-    Serial.printf("\n[BOWL MONITOR] Phat hien can nang giam ngoai phien: %.1fg -> %.1fg (Giam %.1fg)\n",
-                  lastIdleBowlWeight, currentW, delta);
-    Serial.println("[SAFETY POLICY] Chua co camera xac minh thu cung -> Ghi nhan UNKNOWN_CAUSE!");
-    publishBowlEvent("WEIGHT_DECREASED", delta, currentW, "UNKNOWN_CAUSE");
-    lastIdleBowlWeight = currentW;
-  }
-}
-
-// ====================================================================================
-//                    BỘ ĐIỀU KHIỂN CẤP THỨC ĂN (FEEDING CONTROLLER - 18 CASES)
-// ====================================================================================
-bool performFeeding(int targetPortion, bool isOverride, String source, const char* cmdId) {
-  unsigned long now = millis();
-  char activeCommandId[40];
-
-  if (cmdId && strlen(cmdId) > 0) {
-    strncpy(activeCommandId, cmdId, sizeof(activeCommandId) - 1);
-  } else {
-    snprintf(activeCommandId, sizeof(activeCommandId), "local_%lu", now);
-  }
-
-  Serial.printf("\n=======================================================\n");
-  Serial.printf(">>> [FEED REQUEST] ID: %s | Nguon: %s | Khau phan: %dg | Override: %s\n",
-                activeCommandId, source.c_str(), targetPortion, isOverride ? "YES" : "NO");
-
-  // 1. Chống lặp lệnh & Khóa Mutex phiên cấp (C03, N03)
-  if (isDispensing) {
-    Serial.println("[REJECTED] Co cau dang ban (BUSY)! Tu choi lenh moi.");
-    publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "DEVICE_BUSY", "Co cau cap dang hoat dong");
-    return false;
-  }
-
-  // Chống lặp cùng Command ID đã thực thi gần nhất (C03)
-  if (strcmp(activeCommandId, lastProcessedCommandId) == 0 && strlen(activeCommandId) > 0) {
-    Serial.println("[BLOCKED] Trung lap command_id da xu ly! Bo qua.");
-    publishFeedEvent(activeCommandId, "BLOCKED_DUPLICATE", source, targetPortion, 0, "DUPLICATE_CMD_ID", "Lenh da duoc thuc thi");
-    return false;
-  }
-
-  // 2. Khóa an toàn chất lượng thực phẩm (C08)
-  if (isSafetyLockout && !isOverride) {
-    Serial.println("[SAFETY LOCKOUT] He thong dang bi khoa an toan do nghi ngo thuc an hong!");
-    systemStatus = "KHOA AN TOAN!";
-    updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-    beep(3, 100);
-    publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "SAFETY_LOCKOUT", "He thong dang bi khoa an toan");
-    return false;
-  }
-
-  // 3. Kiểm tra xác minh nạp hạt mới (C07)
-  if (!isHopperVerified && !isOverride) {
-    Serial.println("[UNVERIFIED REFILL] Phat hien nap hat chua xac minh chung loai!");
-    systemStatus = "CHO XAC MINH";
-    updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-    beep(2, 150);
-    publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "UNVERIFIED_FOOD", "Vui long xac nhan hat an toan tren App");
-    return false;
-  }
-
-  // 4. Kiểm tra giới hạn ngày (N02)
-  checkDayRollover();
-  if (!isOverride) {
-    if (dailyFeedCount >= MAX_DAILY_FEEDS || (dailyDispensedGrams + targetPortion > MAX_DAILY_PORTION_G)) {
-      Serial.printf("[DAILY LIMIT] Da vuot nguong ngay: %d/%d lan | %.1f/%.1fg\n",
-                    dailyFeedCount, MAX_DAILY_FEEDS, dailyDispensedGrams, MAX_DAILY_PORTION_G);
-      systemStatus = "VUOT HAN MUC";
-      updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-      beep(3, 80);
-      publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "DAILY_LIMIT_EXCEEDED", "Vuot qua gioi han an trong ngay");
-      delay(1200);
-      systemStatus = "SAN SANG";
-      return false;
-    }
-  }
-
-  // 5. Kiểm tra khoảng cách an toàn chống ăn trùng (180s - C03, N02)
-  if (!isOverride && lastFeedSuccessMs > 0 && (now - lastFeedSuccessMs < safeIntervalMs)) {
-    unsigned long elapsedSec = (now - lastFeedSuccessMs) / 1000;
-    Serial.printf("[BLOCKED] Vua cho an cach day %lus (nguong %lus). Bi chan!\n",
-                  elapsedSec, safeIntervalMs / 1000);
-    systemStatus = "BLOCKED: VUA AN";
-    updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-
-    for (int i = 0; i < 2; i++) {
-      digitalWrite(PIN_LED_RED, HIGH);
-      digitalWrite(PIN_BUZZER, HIGH);
-      delay(100);
-      digitalWrite(PIN_LED_RED, LOW);
-      digitalWrite(PIN_BUZZER, LOW);
-      delay(100);
-    }
-
-    publishFeedEvent(activeCommandId, "BLOCKED_DUPLICATE", source, targetPortion, 0, "SAFE_INTERVAL_ACTIVE", "Vua moi cho an");
-    delay(1200);
-    systemStatus = "SAN SANG";
-    return false;
-  }
-
-  // 6. Kiểm tra phần cứng Cân HX711 & Độ ổn định (N08, N09, N10)
-  float initialBowlWeight = 0.0;
-  ScaleStatus scaleSt = readStableWeight(initialBowlWeight, 3000);
-
-  if (scaleSt == SCALE_OFFLINE) {
-    Serial.println("[LOI PHAN CUNG] Cảm biến HX711 không sẵn sàng!");
-    systemStatus = "LOI: HONG CAN!";
-    updateOLED(getFastDistance(), 0, systemStatus);
-    beep(4, 150);
-    publishFeedEvent(activeCommandId, "SENSOR_ERROR", source, targetPortion, 0, "HX711_OFFLINE", "Cam bien can bi dut day");
-    return false;
-  }
-  if (scaleSt == SCALE_BOWL_MISSING) {
-    Serial.println("[BOWL MISSING] Không phát hiện bát thức ăn trên đế cân!");
-    systemStatus = "MAT BAT THUC AN!";
-    updateOLED(getFastDistance(), initialBowlWeight, systemStatus);
-    beep(4, 100);
-    publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "BOWL_MISSING", "Bat thuc an bi lay khoi de can");
-    return false;
-  }
-  if (scaleSt == SCALE_UNSTABLE) {
-    Serial.println("[UNSTABLE] Cân dao động quá mức! Nghi ngờ thú đang tì chân.");
-    systemStatus = "CAN KHONG ON DINH";
-    updateOLED(getFastDistance(), initialBowlWeight, systemStatus);
-    beep(2, 200);
-    publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "SCALE_UNSTABLE", "Can dao dong do thu ty chan");
-    return false;
-  }
-
-  // 7. Kiểm tra cảm biến siêu âm & Mức hạt bồn chứa (C05, N11)
-  float hopperDist = 0.0;
-  UltrasonicStatus usSt = readDistanceChecked(hopperDist);
-
-  if (usSt == ULTRASONIC_TIMEOUT) {
-    Serial.println("[SENSOR ERROR] Cảm biến siêu âm HC-SR04 mất tín hiệu (timeout)!");
-    systemStatus = "LOI: CB SIEU AM";
-    updateOLED(-1.0, initialBowlWeight, systemStatus);
-    beep(3, 150);
-    publishFeedEvent(activeCommandId, "SENSOR_ERROR", source, targetPortion, 0, "ULTRASONIC_TIMEOUT", "Cam bien sieu am khong phan hoi");
-    return false;
-  }
-  if (usSt == ULTRASONIC_EMPTY && !isOverride) {
-    Serial.println("[EMPTY] Hộp chứa đã hết hạt!");
-    systemStatus = "LOI: HET HAT";
-    updateOLED(hopperDist, initialBowlWeight, systemStatus);
-    digitalWrite(PIN_LED_RED, HIGH);
-    beep(4, 150);
-    digitalWrite(PIN_LED_RED, LOW);
-    publishFeedEvent(activeCommandId, "FOOD_EMPTY", source, targetPortion, 0, "HOPPER_EMPTY", "Hop chua het hat");
-    delay(1200);
-    systemStatus = "SAN SANG";
-    return false;
-  }
-
-  // 8. Chống tràn bát & Xử lý khẩu phần bù (N01)
-  float effectivePortion = (float)targetPortion;
-  if (initialBowlWeight + effectivePortion > MAX_BOWL_CAPACITY_G) {
-    float roomLeft = MAX_BOWL_CAPACITY_G - initialBowlWeight;
-    if (roomLeft <= 2.0) {
-      Serial.printf("[BOWL FULL] Bát đã đầy (%.1fg >= 150g). Từ chối cấp để chống tràn!\n", initialBowlWeight);
-      systemStatus = "BAT DA DAY!";
-      updateOLED(hopperDist, initialBowlWeight, systemStatus);
-      beep(2, 150);
-      publishFeedEvent(activeCommandId, "REJECTED", source, targetPortion, 0, "BOWL_FULL", "Bat da day, khong the cap them");
-      delay(1200);
-      systemStatus = "SAN SANG";
-      return false;
-    }
-    Serial.printf("[TOP-UP] Bát còn %.1fg. Điều chỉnh khẩu phần bù: %.1fg -> %.1fg để không tràn!\n",
-                  initialBowlWeight, effectivePortion, roomLeft);
-    effectivePortion = roomLeft;
-  }
-
-  // Kiểm tra nếu đây là lệnh Retry cấp bù sau lỗi kẹt (N04)
-  if (source == "retry" && lastInterruptedTarget > 0) {
-    float remainingNeeded = lastInterruptedTarget - lastInterruptedDelivered;
-    if (remainingNeeded > 0) {
-      effectivePortion = min(effectivePortion, remainingNeeded);
-      Serial.printf("[RETRY] Tự động tính lượng bù còn thiếu từ phiên trước: %.1fg\n", effectivePortion);
-    }
-  }
-
-  // ==================== BẮT ĐẦU PHIÊN CẤP VÒNG KÍN ====================
-  isDispensing = true;
-  strncpy(lastProcessedCommandId, activeCommandId, sizeof(lastProcessedCommandId) - 1);
-  digitalWrite(PIN_LED_GREEN, HIGH);
-  systemStatus = isOverride ? "OVERRIDE FEED" : "DANG CHO AN...";
-  updateOLED(hopperDist, initialBowlWeight, systemStatus);
-  beep(1, 150);
-
-  int pulses = 0;
-  int jamSuspectCount = 0;
-  const int MAX_JAM_RETRIES = 3;
-  float currentWeight = initialBowlWeight;
-  bool isOverPortion = false;
-  bool isPetInterfered = false;
-
-  while ((currentWeight - initialBowlWeight) < effectivePortion && pulses < MAX_FEED_PULSES) {
-    pulses++;
-    float weightBeforePulse = currentWeight;
-    float remaining = effectivePortion - (currentWeight - initialBowlWeight);
-
-    // Thuật toán cấp 2 pha: Coarse vs Fine Pulse (N06)
-    if (remaining > COARSE_FINE_THRESHOLD_G) {
-      // Nhịp thô: góc mở 90 độ, giữ 500ms
-      servoFeed.write(90);
-      delay(500);
-      servoFeed.write(0);
-      delay(400);
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-      simulateDispensePulse(SIM_PULSE_GRAMS, effectivePortion, initialBowlWeight, currentWeight);
-#endif
-    } else {
-      // Nhịp vi chỉnh (Fine Pulse): góc mở 60 độ, nhấp 200ms, trễ 600ms chờ hạt rơi hết
-      Serial.println("[FINE PULSE] Cach dich <= 10g: Nhap vi chinh 200ms...");
-      servoFeed.write(60);
-      delay(200);
-      servoFeed.write(0);
-      delay(600);
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-      simulateDispensePulse(min(2.5f, remaining), effectivePortion, initialBowlWeight, currentWeight);
-#endif
-    }
-
-    currentWeight = getFastWeight();
-    float pulseGain = currentWeight - weightBeforePulse;
-    Serial.printf("[PULSE %d] Bat: %.1fg (+%.1fg) | Muc tieu: %.1fg\n",
-                  pulses, currentWeight, pulseGain, effectivePortion);
-
-    // N07: Phát hiện thú ăn / thò đầu vào bát giữa phiên cấp (cân giảm đột ngột > 2g)
-    if (pulseGain < -2.0) {
-      Serial.printf("[CANH BAO AN TOAN] Can giam dot ngot: %.1fg! Nghi thu dang an.\n", pulseGain);
-      isPetInterfered = true;
-      break;
-    }
-
-    // N06: Kiểm tra cấp quá lượng
-    if ((currentWeight - initialBowlWeight) > (effectivePortion + OVER_PORTION_TOLERANCE)) {
-      Serial.println("[OVER_PORTION] Vuot nguong toi da! Dung servo ngay.");
-      isOverPortion = true;
-      break;
-    }
-
-    // N12: Kiểm tra kẹt hạt khi nhịp tăng không đáng kể
-    if (pulseGain < 1.0) {
-      jamSuspectCount++;
-      Serial.printf("[CANH BAO] Khong tang can (<1g). Lan nghi ket: %d/%d\n", jamSuspectCount, MAX_JAM_RETRIES);
-      triggerAntiJam();
-
-      if (jamSuspectCount >= MAX_JAM_RETRIES) {
-        Serial.println("[JAM ERROR] Da thu go ket 3 lan khong thanh cong!");
-        break;
-      }
-    } else {
-      jamSuspectCount = 0; // Đã ra hạt bình thường
-    }
-
-    publishTelemetry();
-    updateOLED(getFastDistance(), currentWeight, systemStatus);
-  }
-
-  // Kết thúc phiên cấp
-  servoFeed.write(0);
-  servoAnti.write(90);
-  digitalWrite(PIN_LED_GREEN, LOW);
-
-  float actualDispensed = currentWeight - initialBowlWeight;
-  if (actualDispensed < 0) actualDispensed = 0.0;
-  lastIdleBowlWeight = currentWeight;
-
-  // Xử lý các tình huống kết thúc
-  if (isPetInterfered) {
-    // N07: Thú tiếp cận / cướp ăn
-    systemStatus = "DUNG: THU AN!";
-    updateOLED(getFastDistance(), currentWeight, systemStatus);
-    beep(2, 100);
-    publishFeedEvent(activeCommandId, "INTERRUPTED", source, targetPortion, actualDispensed,
-                     "INTERRUPTED_PET_FEEDING", "Tam dung do phat hien thu cung tiep can bat");
-  } else if (jamSuspectCount >= MAX_JAM_RETRIES) {
-    // N04 & N12: Kẹt hạt
-    systemStatus = "LOI KET HAT";
-    updateOLED(getFastDistance(), currentWeight, systemStatus);
-    digitalWrite(PIN_LED_RED, HIGH);
-    beep(5, 200);
-    digitalWrite(PIN_LED_RED, LOW);
-
-    lastInterruptedTarget = effectivePortion;
-    lastInterruptedDelivered = actualDispensed;
-    publishFeedEvent(activeCommandId, "JAM_ERROR", source, targetPortion, actualDispensed,
-                     "JAM_RECOVERY_FAILED", "Co cau bi ket hat, khong the cap them");
-  } else if (pulses >= MAX_FEED_PULSES && (effectivePortion - actualDispensed > 2.0)) {
-    // N05: Hết nhịp cấp tối đa mà chưa đủ hạt
-    systemStatus = "CAP THIEU!";
-    updateOLED(getFastDistance(), currentWeight, systemStatus);
-    beep(3, 100);
-    publishFeedEvent(activeCommandId, "PARTIAL", source, targetPortion, actualDispensed,
-                     "MAX_PULSES_REACHED", "Da dat gioi han nhip cap ma chua du khau phan");
-  } else {
-    // Hoàn tất thành công (N06 có thể kèm cờ OVER_PORTION)
-    systemStatus = "HOAN TAT!";
-    updateOLED(getFastDistance(), currentWeight, systemStatus);
-    beep(2, 100);
-    lastFeedSuccessMs = millis();
-    dailyDispensedGrams += actualDispensed;
-    dailyFeedCount++;
-
-    const char* errCode = isOverPortion ? "OVER_PORTION" : "NONE";
-    String msg = isOverPortion ? "Cap thanh cong (co du nhe do quan tinh)" : "Cho an thanh cong!";
-    publishFeedEvent(activeCommandId, "SUCCESS", source, targetPortion, actualDispensed, errCode, msg);
-
-    lastInterruptedTarget = 0;
-    lastInterruptedDelivered = 0;
-  }
-
-  publishTelemetry();
-  delay(1500);
-  isDispensing = false;
-  systemStatus = "SAN SANG";
-  updateOLED(getFastDistance(), currentWeight, systemStatus);
-  return (systemStatus == "HOAN TAT!");
-}
-
-// ====================================================================================
-//                    GỬI SỰ KIỆN FEED_RESULT (CHUẨN HỢP ĐỒNG DANH & LONG)
-// ====================================================================================
-void publishFeedEvent(const char* cmdId, String status, String source, int targetPortion,
-                      float actualWeight, const char* errorCode, String message) {
-  if (!mqttClient.connected()) {
-    Serial.println("[MQTT] Ngoai tuyen: Khong the gui feed event truc tiep");
+  // A safety lock must still work while the dispensing controller is busy.
+  if (!controller.setSafety(cfg["lockdown"] | controller.lockdown,
+                            cfg["mark_refill"] | false,
+                            cfg["verify_refill"] | false)) {
+    Serial.println("[CONFIG ERROR] Persistence failed");
     return;
   }
-
-  JsonDocument doc;
-  doc["command_id"]       = cmdId ? cmdId : "unknown";
-  doc["event"]            = "FEED_RESULT";
-  doc["status"]           = status;
-  doc["source"]           = source;
-  doc["target_portion_g"] = targetPortion;
-  doc["actual_weight_g"]  = round(actualWeight * 10) / 10.0;
-  doc["error_code"]       = errorCode;
-  doc["message"]          = message;
-  doc["timestamp"]        = (unsigned long)time(nullptr);
-
-  char buffer[320];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_EVENTS, buffer, true);
-  Serial.printf("[MQTT OUT] Event: %s\n", buffer);
+  if (hasNumeric && !controller.updateConfig(next))
+    Serial.println("[CONFIG ERROR] Numeric config rejected while busy");
 }
-
-// ====================================================================================
-//                    GỬI SỰ KIỆN BIẾN ĐỘNG BÁT BOWL_EVENT (N13, N14)
-// ====================================================================================
-void publishBowlEvent(String eventType, float deltaG, float currentWeightG, String cause) {
-  if (!mqttClient.connected()) return;
-
+void mqttMessage(char *topic, byte *bytes, unsigned length) {
   JsonDocument doc;
-  doc["event"]                 = "BOWL_EVENT";
-  doc["type"]                  = eventType;
-  doc["delta_g"]               = round(deltaG * 10) / 10.0;
-  doc["current_bowl_weight_g"] = round(currentWeightG * 10) / 10.0;
-  doc["cause"]                 = cause;
-  doc["timestamp"]             = (unsigned long)time(nullptr);
-
-  char buffer[256];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_EVENTS, buffer, true);
-  Serial.printf("[MQTT OUT] Bowl Event: %s\n", buffer);
-}
-
-// ====================================================================================
-//                    GỬI TELEMETRY ĐỊNH KỲ
-// ====================================================================================
-void publishTelemetry() {
-  if (!mqttClient.connected()) return;
-
-  float dist = getFastDistance();
-  float weight = getFastWeight();
-  int percent = (dist < 0) ? 0 : constrain((int)((HOP_CHUA_CAO_CM - dist) / HOP_CHUA_CAO_CM * 100), 0, 100);
-
-  JsonDocument doc;
-  doc["device_id"]            = "petfeeder_01";
-  doc["distance_cm"]          = round(dist * 10) / 10.0;
-  doc["food_level_percent"]   = percent;
-  doc["bowl_weight_g"]        = round(weight * 10) / 10.0;
-  doc["status"]               = systemStatus;
-  doc["food_quality_status"]  = foodQualityStatus;
-  doc["hopper_verified"]      = isHopperVerified;
-  doc["is_safety_lockout"]    = isSafetyLockout;
-  doc["daily_dispensed_g"]    = round(dailyDispensedGrams * 10) / 10.0;
-  doc["daily_feed_count"]     = dailyFeedCount;
-  doc["uptime"]               = millis() / 1000;
-
-  char buffer[384];
-  const size_t payloadBytes = measureJson(doc);
-  if (payloadBytes >= sizeof(buffer)) {
-    Serial.printf("[MQTT ERROR] Telemetry JSON qua lon: %u bytes (buffer %u).\n",
-                  (unsigned)payloadBytes, (unsigned)sizeof(buffer));
+  if (deserializeJson(doc, bytes, length)) {
+    Serial.println("[MQTT ERROR] Invalid JSON");
     return;
   }
-  const size_t written = serializeJson(doc, buffer, sizeof(buffer));
-  const bool sent = mqttClient.publish(TOPIC_TELEMETRY,
-                                      reinterpret_cast<const uint8_t*>(buffer), written, true);
-  if (sent) {
-    Serial.printf("[MQTT OUT] Telemetry da gui: %u bytes.\n", (unsigned)written);
-  } else {
-    Serial.printf("[MQTT ERROR] Khong gui duoc telemetry: %u bytes, MQTT buffer=%u, state=%d.\n",
-                  (unsigned)written, mqttClient.getBufferSize(), mqttClient.state());
-  }
-}
-
-// ====================================================================================
-//                    XỬ LÝ MQTT MESSAGE TỪ BACKEND
-// ====================================================================================
-void mqttCallback(char* topic, byte* message, unsigned int length) {
-  String payload = "";
-  for (unsigned int i = 0; i < length; i++) {
-    payload += (char)message[i];
-  }
-  Serial.printf("\n[MQTT IN] Topic: %s | Payload: %s\n", topic, payload.c_str());
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.printf("[MQTT Error] JSON loi: %s\n", err.c_str());
-    return;
-  }
-
-  // 1. Nhận lệnh cho ăn ngay (FR-08 & C03)
-  if (String(topic) == TOPIC_COMMAND) {
-    String cmd = doc["command"] | "";
-    if (cmd == "FEED" || cmd == "RETRY") {
-      int portion = doc["portion"] | (doc["target_portion_g"] | 30);
-      bool override = doc["override"] | false;
-      String src = doc["source"] | "app";
-      const char* cmdId = doc["command_id"] | "";
-      unsigned long expiresAt = doc["expires_at"] | 0;
-
-      // Kiểm tra hết hạn lệnh (N25)
-      if (expiresAt > 0 && (unsigned long)time(nullptr) > expiresAt) {
-        Serial.println("[EXPIRED] Lenh MQTT da qua thoi gian het han! Tu choi.");
-        publishFeedEvent(cmdId, "REJECTED", src, portion, 0, "COMMAND_EXPIRED", "Lenh da qua thoi diem het han");
+  if (String(topic) == commandTopic) {
+    const String action = doc["command"] | "";
+    const std::string id = doc["command_id"].as<std::string>();
+    if (action == "QUERY") {
+      feeder::Command c;
+      c.id = id;
+      c.target = doc["target_portion_g"] | 30.;
+      c.expiresAt = doc["expires_at"] | (uint64_t)0;
+      controller.query(c, epochNow());
+      return;
+    }
+    if (action == "CANCEL") {
+      controller.cancel(id, epochNow());
+      return;
+    }
+    feeder::Command c;
+    c.id = id;
+    c.action = action.c_str();
+    c.source = doc["source"] | "app";
+    c.retryOf = doc["retry_of"] | "";
+    c.overrideInterval = doc["override"] | false;
+    c.confirmBowl = doc["confirm_bowl"] | false;
+    c.target = doc["target_portion_g"] | (doc["portion"] | 0.);
+    c.expiresAt = doc["expires_at"] | (uint64_t)0;
+    const bool invalid =
+        !doc["target_portion_g"].is<double>() && !doc["portion"].is<double>();
+    if (invalid || !c.expiresAt || !doc["expires_at"].is<uint64_t>() ||
+        (!doc["target_portion_g"].isNull() &&
+         !doc["target_portion_g"].is<double>()) ||
+        (!doc["portion"].isNull() && !doc["portion"].is<double>()) ||
+        (!doc["confirm_bowl"].isNull() && !doc["confirm_bowl"].is<bool>()) ||
+        (!doc["override"].isNull() && !doc["override"].is<bool>()) ||
+        (!doc["portion"].isNull() && !doc["target_portion_g"].isNull() &&
+         doc["portion"].as<double>() != c.target))
+      c.target = 0;
+    controller.request(c, millis(), epochNow(), dayNow());
+  } else if (String(topic) == configTopic) {
+    applyConfig(doc["config"].as<JsonObject>());
+  } else if (String(topic) == scheduleTopic) {
+    if (!doc["schedules"].is<JsonArray>() || controller.busy())
+      return;
+    std::vector<Schedule> next;
+    for (JsonObject s : doc["schedules"].as<JsonArray>()) {
+      if (next.size() >= 10 || !s["id"].is<const char *>() ||
+          !s["time"].is<const char *>() || !s["enabled"].is<bool>())
         return;
-      }
-
-      performFeeding(portion, override, (cmd == "RETRY") ? "retry" : src, cmdId);
+      Schedule a;
+      a.id = s["id"].as<String>();
+      a.portion = s["portion"] | 0;
+      a.enabled = s["enabled"];
+      String t = s["time"].as<String>();
+      if (t.length() != 5 || t[2] != ':' || !isDigit(t[0]) || !isDigit(t[1]) ||
+          !isDigit(t[3]) || !isDigit(t[4]))
+        return;
+      a.hour = t.substring(0, 2).toInt();
+      a.minute = t.substring(3).toInt();
+      if (a.hour > 23 || a.minute > 59 || a.portion < 5 || a.portion > 300)
+        return;
+      a.daysMask = s["days_mask"] | 127;
+      for (auto &old : schedules)
+        if (old.id == a.id)
+          a.lastDay = old.lastDay;
+      next.push_back(a);
     }
-  }
-
-  // 2. Nhận cấu hình hệ thống & Khóa an toàn (C07, C08, N02)
-  else if (String(topic) == TOPIC_CONFIG) {
-    if (doc["config"]) {
-      JsonObject cfg = doc["config"];
-      if (cfg["safe_interval_sec"]) {
-        safeIntervalMs = (unsigned long)cfg["safe_interval_sec"] * 1000;
-        Serial.printf("[CONFIG] Safe interval = %lums\n", safeIntervalMs);
-      }
-      if (cfg["lockdown"].is<bool>()) {
-        isSafetyLockout = cfg["lockdown"].as<bool>();
-        Serial.printf("[CONFIG] Safety Lockout = %s\n", isSafetyLockout ? "ACTIVATED" : "DEACTIVATED");
-        if (isSafetyLockout) {
-          systemStatus = "KHOA AN TOAN!";
-          digitalWrite(PIN_LED_RED, HIGH);
-        } else {
-          systemStatus = "SAN SANG";
-          digitalWrite(PIN_LED_RED, LOW);
-        }
-      }
-      if (cfg["verify_refill"].is<bool>() && cfg["verify_refill"].as<bool>()) {
-        isHopperVerified = true;
-        Serial.println("[CONFIG] Da xac nhan nguon hat an toan!");
-        systemStatus = "SAN SANG";
-      }
-    }
-  }
-
-  // 3. Nhận đồng bộ lịch (FR-04)
-  else if (String(topic) == TOPIC_SCHEDULES) {
-    JsonArray arr = doc["schedules"].as<JsonArray>();
-    scheduleCount = 0;
-    for (JsonObject obj : arr) {
-      if (scheduleCount >= MAX_SCHEDULES) break;
-      const char* t = obj["time"] | "00:00";
-      int p = obj["portion"] | 30;
-      bool en = obj["enabled"] | true;
-      const char* id = obj["id"] | "";
-
-      int h = 0, m = 0;
-      sscanf(t, "%d:%d", &h, &m);
-
-      strncpy(localSchedules[scheduleCount].id, id, sizeof(localSchedules[scheduleCount].id));
-      localSchedules[scheduleCount].hour = h;
-      localSchedules[scheduleCount].minute = m;
-      localSchedules[scheduleCount].portion = p;
-      localSchedules[scheduleCount].enabled = en;
-      localSchedules[scheduleCount].lastTriggerDay = -1;
-      scheduleCount++;
-    }
-    Serial.printf("[SCHEDULES] Da dong bo %d lich cho an cuc bo!\n", scheduleCount);
+    schedules = next;
   }
 }
-
-// ====================================================================================
-//                    KIỂM TRA LỊCH CỤC BỘ (OFFLINE SCHEDULES - N03)
-// ====================================================================================
-void checkLocalSchedules() {
-  if (isDispensing) return; // N03: Không ngắt phiên đang chạy
-
-  struct tm timeinfo;
-  // Clock sync happens asynchronously. Do not stall MQTT while NTP is unavailable.
-  if (!getLocalTime(&timeinfo, 0)) return;
-
-  int currentHour = timeinfo.tm_hour;
-  int currentMin  = timeinfo.tm_min;
-  int currentDay  = timeinfo.tm_yday;
-
-  for (int i = 0; i < scheduleCount; i++) {
-    if (localSchedules[i].enabled) {
-      if (localSchedules[i].hour == currentHour && localSchedules[i].minute == currentMin) {
-        if (localSchedules[i].lastTriggerDay != currentDay) {
-          localSchedules[i].lastTriggerDay = currentDay;
-          Serial.printf("\n[AUTO SCHEDULE] Kich hoat lich %02d:%02d (%dg)\n",
-                        currentHour, currentMin, localSchedules[i].portion);
-          char schedCmdId[32];
-          snprintf(schedCmdId, sizeof(schedCmdId), "sched_%s_%d", localSchedules[i].id, currentDay);
-          performFeeding(localSchedules[i].portion, false, "schedule", schedCmdId);
-        }
-      }
-    }
-  }
-}
-
-// ====================================================================================
-//                    KẾT NỐI WIFI & NTP
-// ====================================================================================
-void setupWiFi() {
-  Serial.printf("\n[WiFi] Dang ket noi toi SSID: %s\n", WIFI_SSID);
-  systemStatus = "KET NOI WIFI...";
-  updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(400);
-    Serial.print(".");
-    attempts++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[WiFi] Da ket noi thanh cong!");
-    Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
-    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+void publishTelemetry() {
+  JsonDocument d;
+  const auto &r = controller.reading;
+  d["contract_version"] = 2;
+  d["device_id"] = "petfeeder_01";
+  d["status"] = controller.busy() ? controller.active.status : "SAN SANG";
+  if (r.scale)
+    d["bowl_weight_g"] = r.weight;
+  else
+    d["bowl_weight_g"] = nullptr;
+  if (r.ultrasonic) {
+    d["distance_cm"] = r.distance;
+    d["food_level_percent"] =
+        constrain((int)((controller.config.hopperHeight - r.distance) /
+                        controller.config.hopperHeight * 100),
+                  0, 100);
   } else {
-    Serial.println("\n[WiFi] Khong the ket noi Wi-Fi! Chay che do ngoai tuyen.");
+    d["distance_cm"] = nullptr;
+    d["food_level_percent"] = nullptr;
+  }
+  d["lid_open"] = r.lidOpen;
+  d["scale_valid"] = r.scale;
+  d["scale_stable"] = r.stable;
+  d["ultrasonic_valid"] = r.ultrasonic;
+  d["bowl_presence_available"] = r.presenceAvailable;
+  if (r.presenceAvailable)
+    d["bowl_present"] = r.bowlPresent;
+  else
+    d["bowl_present"] = nullptr;
+  d["food_quality_status"] = "UNVERIFIED";
+  d["hopper_verified"] = controller.refillVerified;
+  d["lockdown"] = controller.lockdown;
+  d["busy"] = controller.busy();
+  d["active_command_id"] =
+      controller.busy() ? controller.active.command.id : "";
+  d["daily_charged_g"] = controller.charged;
+  d["daily_feed_count"] = controller.feedCount;
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+  d["simulation_mode"] = true;
+#else
+  d["simulation_mode"] = false;
+#endif
+  JsonObject snapshot = d["config_snapshot"].to<JsonObject>();
+#define TELEMETRY_CONFIG(key, member) snapshot[key] = controller.config.member;
+  CONFIG_FIELDS(TELEMETRY_CONFIG)
+#undef TELEMETRY_CONFIG
+  snapshot["lockdown"] = controller.lockdown;
+  String payload;
+  serializeJson(d, payload);
+  if (mqtt.publish(telemetryTopic.c_str(), payload.c_str(), false))
+    Serial.printf("[MQTT OUT] Telemetry: %u bytes\n", payload.length());
+  else
+    Serial.printf("[MQTT ERROR] Telemetry failed, state=%d\n", mqtt.state());
+}
+void serialControl() {
+  while (Serial.available()) {
+    const char c = Serial.read();
+    if (c != '\n' && c != '\r') {
+      if (serialLine.length() < 1024)
+        serialLine += c;
+      else
+        serialLine = "";
+      continue;
+    }
+    if (!serialLine.length())
+      continue;
+    JsonDocument d;
+    auto err = deserializeJson(d, serialLine);
+    serialLine = "";
+    if (err) {
+      Serial.println("[SERIAL ERROR] Expected JSON line");
+      continue;
+    }
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+    JsonObject s = d["sim"];
+    if (!s.isNull()) {
+      if (!s["weight_g"].isNull())
+        sim.weight = s["weight_g"];
+      if (!s["distance_cm"].isNull())
+        sim.distance = s["distance_cm"];
+      if (!s["pulse_g"].isNull())
+        sim.pulseGrams = s["pulse_g"];
+      if (!s["late_drop_g"].isNull())
+        sim.lateDrop = s["late_drop_g"];
+      if (!s["noise_g"].isNull())
+        sim.noise = s["noise_g"];
+      if (!s["scale_online"].isNull())
+        sim.scaleOnline = s["scale_online"];
+      if (!s["ultrasonic_online"].isNull())
+        sim.ultrasonicOnline = s["ultrasonic_online"];
+      if (!s["bowl_present"].isNull())
+        sim.present = s["bowl_present"];
+      if (!s["presence_available"].isNull())
+        sim.presenceAvailable = s["presence_available"];
+      if (!s["lid_open"].isNull())
+        sim.lid = s["lid_open"];
+      if (!s["jam_after_pulses"].isNull()) {
+        sim.jamAfterPulses = s["jam_after_pulses"];
+        simPulses = 0;
+      }
+      Serial.println("[SIM] Inputs changed (simulation only)");
+    }
+#endif
+    if (d["calibration"].is<JsonObject>() && !controller.busy()) {
+      JsonObject c = d["calibration"];
+      const double factor = c["factor"] | scaleFactor,
+                   offset = c["offset"] | scaleOffset;
+      if (std::isfinite(factor) && std::fabs(factor) > 0.000001 &&
+          std::isfinite(offset)) {
+        scaleFactor = factor;
+        scaleOffset = offset;
+        saveState();
+        Serial.println(
+            "[CALIBRATION] Stored grams factor/offset; no automatic tare");
+      }
+    }
+    if (d["config"].is<JsonObject>())
+      applyConfig(d["config"]);
+    if (d["feed_g"].is<double>())
+      controller.request(localCommand("button", d["feed_g"]), millis(),
+                         epochNow(), dayNow());
   }
 }
-
-// ====================================================================================
-//                    KẾT NỐI MQTT BROKER
-// ====================================================================================
-void reconnectMQTT() {
-  if (mqttClient.connected() || WiFi.status() != WL_CONNECTED) return;
-
-  unsigned long now = millis();
-  if (now - lastMQTTReconnect < 4000) return;
-  lastMQTTReconnect = now;
-
-  Serial.printf("[MQTT] Dang ket noi toi Broker: %s:%d...\n", MQTT_SERVER, MQTT_PORT);
-  if (mqttClient.connect(mqttClientId.c_str())) {
-    Serial.println("[MQTT] Da ket noi thanh cong!");
-    mqttClient.subscribe(TOPIC_COMMAND);
-    mqttClient.subscribe(TOPIC_SCHEDULES);
-    mqttClient.subscribe(TOPIC_CONFIG);
-    beep(1, 80);
-  } else {
-    Serial.printf("[MQTT] Ket noi that bai, ma loi rc=%d\n", mqttClient.state());
-  }
-}
-
-// ====================================================================================
-//                    KHỞI TẠO HỆ THỐNG (SETUP)
-// ====================================================================================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n=============================================");
-  Serial.println("  PETFEEDER IOT - HE THONG CAP HAT AN TOAN   ");
-  Serial.println("  Author: Ngo Cong Danh - Nhom 7             ");
-  Serial.println("=============================================");
-
-  uint64_t chipId = ESP.getEfuseMac();
-  mqttClientId = String(MQTT_CLIENT_ID) + "_" +
-                 String((uint32_t)(chipId >> 32), HEX) +
-                 String((uint32_t)chipId, HEX);
-
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
-  pinMode(PIN_BUTTON, INPUT_PULLUP);
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
-
-  digitalWrite(PIN_LED_GREEN, LOW);
-  digitalWrite(PIN_LED_RED, LOW);
-  digitalWrite(PIN_BUZZER, LOW);
-
-  servoFeed.attach(PIN_SERVO_FEED);
-  servoAnti.attach(PIN_SERVO_ANTI);
-  servoFeed.write(0);
-  servoAnti.write(90);
-
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("[LOI] Khong the tim thay OLED SSD1306!");
-  }
-  display.clearDisplay();
-
-  scale.begin(PIN_HX711_DT, PIN_HX711_SCK);
-  scale.set_scale();
-  scale.tare();
-
-  beep(1, 150);
-  systemStatus = "KHOI DONG";
-  updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-
-  setupWiFi();
-  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
-  if (!mqttClient.setBufferSize(MQTT_PACKET_BUFFER_BYTES)) {
-    Serial.println("[MQTT ERROR] Khong cap phat duoc MQTT packet buffer!");
-  }
-  mqttClient.setKeepAlive(MQTT_KEEP_ALIVE_SECONDS);
-  Serial.printf("[MQTT CONFIG] Buffer=%u bytes, keepalive=%us.\n",
-                mqttClient.getBufferSize(), MQTT_KEEP_ALIVE_SECONDS);
-
-  systemStatus = "SAN SANG";
-  updateOLED(getFastDistance(), getFastWeight(), systemStatus);
-  lastIdleBowlWeight = getFastWeight();
+  if (PETFEEDER_BOWL_PRESENT_PIN >= 0)
+    pinMode(PETFEEDER_BOWL_PRESENT_PIN, INPUT_PULLUP);
+  if (PETFEEDER_LID_PIN >= 0)
+    pinMode(PETFEEDER_LID_PIN, INPUT_PULLUP);
+  feedServo.attach(PIN_SERVO_FEED);
+  antiServo.attach(PIN_SERVO_ANTI);
+  feedServo.write(0);
+  antiServo.write(90);
+  scale.begin(PIN_HX711_DT, PIN_HX711_SCK); // Never tare food away at boot.
+  oledReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+  nvsReady = prefs.begin("feeder-sim-v2", false);
+#else
+  nvsReady = prefs.begin("feeder-real-v2", false);
+#endif
+  bootSequence = prefs.getUInt("boot", 0) + 1;
+  prefs.putUInt("boot", bootSequence);
+  clientId = String("PetFeeder_") + String((uint32_t)ESP.getEfuseMac(), HEX);
+  controller.onResult = [](const feeder::Result &r) {
+    JsonDocument d;
+    auto obj = d.to<JsonObject>();
+    writeResult(obj, r);
+    obj["event"] = "FEED_RESULT";
+    obj["contract_version"] = 2;
+    String json;
+    serializeJson(d, json);
+    enqueue(json);
+    Serial.printf("[FEED RESULT] %s\n", json.c_str());
+  };
+  controller.onBowl = [](const std::string &type, double delta, double weight,
+                         const std::string &cause) {
+    JsonDocument d;
+    d["event"] = "BOWL_EVENT";
+    d["type"] = type;
+    d["delta_g"] = delta;
+    d["current_bowl_weight_g"] = weight;
+    d["cause"] = cause;
+    d["timestamp"] = epochNow();
+    d["event_id"] = clientId + "_" + String(bootSequence) + "_bowl_" +
+                    String(++bowlSequence);
+    String json;
+    serializeJson(d, json);
+    enqueue(json);
+    Serial.printf("[BOWL EVENT] %s\n", json.c_str());
+  };
+  loadState();
+  controller.persist = saveState;
+  if (!saveState())
+    controller.lockdown = true;
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), buttonEdge, CHANGE);
+  WiFi.begin("Wokwi-GUEST", "");
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+  mqtt.setServer("broker.emqx.io", 1883);
+  mqtt.setCallback(mqttMessage);
+  mqtt.setBufferSize(4096);
+  mqtt.setKeepAlive(60);
+  mqtt.setSocketTimeout(1);
+  Serial.println("[BOOT] Contract v2. Refill requires owner acknowledgement. "
+                 "JSON Serial controls enabled.");
 }
-
-// ====================================================================================
-//                    VÒNG LẶP CHÍNH (LOOP)
-// ====================================================================================
 void loop() {
-  // 1. Quản lý MQTT
+  uint32_t now = millis();
+  serialControl();
+  sampleInputs(now);
   if (WiFi.status() == WL_CONNECTED) {
-    if (!mqttClient.connected()) {
-      reconnectMQTT();
-    } else {
-      mqttClient.loop();
+    if (!mqtt.connected() &&
+        (!controller.busy() || controller.phase == feeder::Phase::Paused) &&
+        now - lastConnect >= 4000) {
+      lastConnect = now;
+      if (mqtt.connect(clientId.c_str())) {
+        mqtt.subscribe(commandTopic.c_str());
+        mqtt.subscribe(configTopic.c_str());
+        mqtt.subscribe(scheduleTopic.c_str());
+        Serial.println("[MQTT] Connected (contract v2)");
+      } else
+        Serial.printf("[MQTT] Connect failed: %d\n", mqtt.state());
+    }
+    if (mqtt.connected())
+      mqtt.loop();
+  }
+  if (buttonReady) {
+    noInterrupts();
+    uint32_t duration = buttonDuration;
+    buttonReady = false;
+    interrupts();
+    if (duration >= 2500 && !controller.refillVerified)
+      controller.setSafety(controller.lockdown, false, true);
+    else if (duration >= 50) {
+      auto c = localCommand("button");
+      c.overrideInterval = duration >= 2500;
+      controller.request(c, now, epochNow(), dayNow());
     }
   }
-
-  // 2. Xử lý nút bấm vật lý (Debounce 50ms & Long-press Override > 2.5s)
-  int btnState = digitalRead(PIN_BUTTON);
-  if (btnState == LOW) {
-    if (!isButtonPressed) {
-      isButtonPressed = true;
-      buttonPressTime = millis();
-    }
-  } else {
-    if (isButtonPressed) {
-      unsigned long duration = millis() - buttonPressTime;
-      isButtonPressed = false;
-
-      // Nạp mở khóa xác minh nguồn thức ăn nếu đang chờ xác minh (C07)
-      if (!isHopperVerified && duration >= 2500) {
-        isHopperVerified = true;
-        Serial.println("[BUTTON] Da xac nhan hat an toan qua nut bam vat ly!");
-        beep(2, 100);
-        systemStatus = "SAN SANG";
+  struct tm local;
+  if (getLocalTime(&local, 0)) {
+    for (auto &s : schedules)
+      if (s.enabled && s.lastDay != dayNow() &&
+          (s.daysMask & (1 << local.tm_wday)) && s.hour == local.tm_hour &&
+          s.minute == local.tm_min) {
+        s.lastDay = dayNow();
+        auto c = localCommand("schedule", s.portion);
+        c.id = (String("schedule_") + s.id + "_" + String(s.lastDay)).c_str();
+        controller.request(c, now, epochNow(), dayNow());
       }
-      // Nhấn giữ > 2.5s: Override feed (C05, Section 2.3.1)
-      else if (duration >= 2500) {
-        Serial.println("[BUTTON] Nhan giu >2.5s: Kich hoat OVERRIDE FEED!");
-        beep(1, 400);
-        performFeeding(30, true, "override");
-      }
-      // Nhấn nhả thông thường 50ms - 2.5s (C03)
-      else if (duration >= 50) {
-        Serial.println("[BUTTON] Nhan nha: Kich hoat cho an tai cho!");
-        performFeeding(30, false, "button");
-      }
+  }
+  controller.tick(now, epochNow());
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+  if (previousFeedAngle > 0 && previousFeedAngle != 120 &&
+      controller.feedAngle == 0) {
+    simPulses++;
+    if (sim.jamAfterPulses < 0 || (int)simPulses <= sim.jamAfterPulses) {
+      const double amount = previousFeedAngle == 60
+                                ? std::min(2.5, sim.pulseGrams)
+                                : sim.pulseGrams;
+      sim.weight += amount + sim.lateDrop; // Deliberately permit overrun and
+                                           // under-delivery for tests.
     }
   }
-
-  // 3. Giám sát biến động bát ngoài phiên cấp (N13, N14)
-  monitorIdleBowl();
-
-  // 4. Kiểm tra lịch tự động (FR-03, FR-04, N03)
-  static unsigned long lastScheduleCheck = 0;
-  if (millis() - lastScheduleCheck >= 1000) {
-    lastScheduleCheck = millis();
-    checkLocalSchedules();
-  }
-
-  // 5. Gửi Telemetry định kỳ mỗi 3s
-  if (millis() - lastTelemetryUpdate >= 3000) {
-    lastTelemetryUpdate = millis();
+  previousFeedAngle = controller.feedAngle;
+#endif
+  feedServo.write(controller.feedAngle);
+  antiServo.write(controller.antiAngle);
+  digitalWrite(PIN_LED_GREEN,
+               controller.busy() && controller.phase != feeder::Phase::Paused);
+  digitalWrite(PIN_LED_RED, controller.lockdown || !controller.refillVerified ||
+                                controller.phase == feeder::Phase::Paused);
+  // Audible attention is scheduled, never a blocking beep loop.
+  digitalWrite(PIN_BUZZER,
+               controller.phase == feeder::Phase::Paused && now % 1000 < 100);
+  if (mqtt.connected() && !outbox.empty() &&
+      mqtt.publish(eventTopic.c_str(), outbox.front().c_str(), false))
+    outbox.pop_front();
+  if (mqtt.connected() && now - lastTelemetry >= 1000) {
+    lastTelemetry = now;
     publishTelemetry();
   }
-
-  // 6. Cập nhật OLED mỗi 500ms
-  if (millis() - lastDisplayUpdate >= 500) {
-    lastDisplayUpdate = millis();
-    updateOLED(getFastDistance(), getFastWeight(), systemStatus);
+  if (oledReady && now - lastScreen >= 500) {
+    lastScreen = now;
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("PETFEEDER v2");
+#if defined(PETFEEDER_WOKWI_SIMULATION)
+    display.println("SIMULATION");
+#endif
+    if (controller.reading.scale)
+      display.printf("Bat: %.1f g\n", controller.reading.weight);
+    else
+      display.println("Bat: LOI CAN");
+    if (controller.reading.ultrasonic)
+      display.printf("Hop: %.1f cm\n", controller.reading.distance);
+    else
+      display.println("Hop: LOI CB");
+    display.println(controller.busy() ? controller.active.status.c_str()
+                                      : "SAN SANG");
+    if (controller.lockdown)
+      display.println("KHOA AN TOAN");
+    else if (!controller.refillVerified)
+      display.println("CHO XAC NHAN HAT");
+    else if (!controller.reading.presenceAvailable)
+      display.println("THIEU CAM BIEN BAT");
+    display.display();
   }
+  delay(2); // Yield between bounded sensor/controller steps.
 }
