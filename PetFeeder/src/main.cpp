@@ -68,6 +68,10 @@ const char* WIFI_PASSWORD = "";
 #define MQTT_CLIENT_ID    "ESP32_PetFeeder_Client"
 #define MQTT_TOPIC_PREFIX "duylinh0212/petfeeder/v1"
 
+// PubSubClient's default 256 bytes cannot hold telemetry plus its MQTT topic/header.
+const uint16_t MQTT_PACKET_BUFFER_BYTES = 1024;
+const uint16_t MQTT_KEEP_ALIVE_SECONDS = 60;
+
 const char* TOPIC_COMMAND   = MQTT_TOPIC_PREFIX "/command";
 const char* TOPIC_SCHEDULES = MQTT_TOPIC_PREFIX "/schedules/sync";
 const char* TOPIC_CONFIG    = MQTT_TOPIC_PREFIX "/config";
@@ -434,7 +438,7 @@ void triggerAntiJam() {
 // ====================================================================================
 void checkDayRollover() {
   struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
+  if (getLocalTime(&timeinfo, 0)) {
     int currentDay = timeinfo.tm_yday;
     if (currentDayTracker == -1) {
       currentDayTracker = currentDay;
@@ -868,8 +872,21 @@ void publishTelemetry() {
   doc["uptime"]               = millis() / 1000;
 
   char buffer[384];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_TELEMETRY, buffer, true);
+  const size_t payloadBytes = measureJson(doc);
+  if (payloadBytes >= sizeof(buffer)) {
+    Serial.printf("[MQTT ERROR] Telemetry JSON qua lon: %u bytes (buffer %u).\n",
+                  (unsigned)payloadBytes, (unsigned)sizeof(buffer));
+    return;
+  }
+  const size_t written = serializeJson(doc, buffer, sizeof(buffer));
+  const bool sent = mqttClient.publish(TOPIC_TELEMETRY,
+                                      reinterpret_cast<const uint8_t*>(buffer), written, true);
+  if (sent) {
+    Serial.printf("[MQTT OUT] Telemetry da gui: %u bytes.\n", (unsigned)written);
+  } else {
+    Serial.printf("[MQTT ERROR] Khong gui duoc telemetry: %u bytes, MQTT buffer=%u, state=%d.\n",
+                  (unsigned)written, mqttClient.getBufferSize(), mqttClient.state());
+  }
 }
 
 // ====================================================================================
@@ -970,7 +987,8 @@ void checkLocalSchedules() {
   if (isDispensing) return; // N03: Không ngắt phiên đang chạy
 
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) return;
+  // Clock sync happens asynchronously. Do not stall MQTT while NTP is unavailable.
+  if (!getLocalTime(&timeinfo, 0)) return;
 
   int currentHour = timeinfo.tm_hour;
   int currentMin  = timeinfo.tm_min;
@@ -1086,6 +1104,12 @@ void setup() {
   setupWiFi();
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+  if (!mqttClient.setBufferSize(MQTT_PACKET_BUFFER_BYTES)) {
+    Serial.println("[MQTT ERROR] Khong cap phat duoc MQTT packet buffer!");
+  }
+  mqttClient.setKeepAlive(MQTT_KEEP_ALIVE_SECONDS);
+  Serial.printf("[MQTT CONFIG] Buffer=%u bytes, keepalive=%us.\n",
+                mqttClient.getBufferSize(), MQTT_KEEP_ALIVE_SECONDS);
 
   systemStatus = "SAN SANG";
   updateOLED(getFastDistance(), getFastWeight(), systemStatus);
