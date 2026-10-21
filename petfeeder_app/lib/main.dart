@@ -8,45 +8,41 @@ import 'screens/schedules_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/settings_screen.dart';
 
-void main() {
-  runApp(const PetFeederApp());
-}
+void main() => runApp(const PetFeederApp());
 
 class PetFeederApp extends StatelessWidget {
   const PetFeederApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'PetFeeder IoT',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.themeData,
-      home: const MainHomeScreen(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'PetFeeder',
+    debugShowCheckedModeBanner: false,
+    theme: AppTheme.themeData,
+    home: const MainHomeScreen(),
+  );
 }
 
 class MainHomeScreen extends StatefulWidget {
   const MainHomeScreen({super.key});
-
   @override
   State<MainHomeScreen> createState() => _MainHomeScreenState();
 }
 
 class _MainHomeScreenState extends State<MainHomeScreen> {
   int _currentIndex = 0;
+  final _visited = <int>{0};
   DeviceStatus? _deviceStatus;
   bool _isLoading = true;
+  Future<void>? _pendingStatus;
   Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
     _fetchStatus();
-    // Tự động làm mới trạng thái mỗi 3 giây
-    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      _fetchStatus(silent: true);
-    });
+    _pollingTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _fetchStatus(silent: true),
+    );
   }
 
   @override
@@ -55,116 +51,129 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     super.dispose();
   }
 
-  Future<void> _fetchStatus({bool silent = false}) async {
-    if (!silent) setState(() => _isLoading = true);
+  Future<void> _fetchStatus({bool silent = false}) {
+    return _pendingStatus ??= _loadStatus(
+      silent: silent,
+    ).whenComplete(() => _pendingStatus = null);
+  }
+
+  Future<void> _loadStatus({required bool silent}) async {
+    if (!silent && mounted) setState(() => _isLoading = true);
     try {
       final status = await ApiService().getDeviceStatus();
-      if (mounted) {
-        setState(() {
-          _deviceStatus = status;
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _deviceStatus = status);
     } catch (_) {
-      if (mounted && !silent) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _deviceStatus = null);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final screens = [
+    final screens = <Widget>[
       DashboardScreen(
         status: _deviceStatus,
         isLoading: _isLoading,
-        onRefresh: () => _fetchStatus(),
+        onRefresh: _fetchStatus,
       ),
       const SchedulesScreen(),
       const HistoryScreen(),
-      SettingsScreen(onRefresh: () => _fetchStatus()),
+      SettingsScreen(onRefresh: _fetchStatus),
     ];
-
     return Scaffold(
       appBar: AppBar(
         title: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(7),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: AppTheme.primaryLight,
-                borderRadius: BorderRadius.circular(12),
+                color: AppTheme.primary,
+                borderRadius: BorderRadius.circular(14),
               ),
-              child: const Icon(Icons.pets_rounded, color: AppTheme.primary, size: 20),
+              child: const Icon(
+                Icons.pets_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
             ),
-            const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'PetFeeder Smart',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'petfeeder',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.8,
                 ),
-                Text(
-                  _deviceStatus?.online == true
-                      ? 'Thiết bị sẵn sàng'
-                      : 'Đang kết nối lại...',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: _deviceStatus?.online == true ? AppTheme.accentGreen : AppTheme.textMuted,
-                  ),
-                ),
-              ],
+              ),
             ),
           ],
         ),
         actions: [
           IconButton(
+            tooltip: 'Làm mới trạng thái thiết bị',
+            style: IconButton.styleFrom(
+              backgroundColor: AppTheme.surface,
+              foregroundColor: AppTheme.primary,
+            ),
+            onPressed: _isLoading ? null : _fetchStatus,
             icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Làm mới',
-            onPressed: () => _fetchStatus(),
           ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: screens[_currentIndex],
-      bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          color: AppTheme.surface,
-          border: Border(top: BorderSide(color: AppTheme.border, width: 1)),
+      body: SafeArea(
+        top: false,
+        child: IndexedStack(
+          index: _currentIndex,
+          children: List.generate(
+            screens.length,
+            (i) => _visited.contains(i) ? screens[i] : const SizedBox.shrink(),
+          ),
         ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: AppTheme.surface,
-          selectedItemColor: AppTheme.primary,
-          unselectedItemColor: AppTheme.textMuted,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
-          elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.dashboard_outlined),
-              activeIcon: Icon(Icons.dashboard_rounded),
-              label: 'Giám sát',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.alarm_outlined),
-              activeIcon: Icon(Icons.alarm_rounded),
-              label: 'Lịch ăn',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.history_outlined),
-              activeIcon: Icon(Icons.history_rounded),
-              label: 'Nhật ký',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.settings_outlined),
-              activeIcon: Icon(Icons.settings_rounded),
-              label: 'Cài đặt',
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+          boxShadow: [
+            BoxShadow(
+              color: AppTheme.primary.withAlpha(12),
+              blurRadius: 24,
+              offset: const Offset(0, -4),
             ),
           ],
+        ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+          child: NavigationBar(
+            selectedIndex: _currentIndex,
+            onDestinationSelected: (i) => setState(() {
+              _currentIndex = i;
+              _visited.add(i);
+            }),
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.space_dashboard_outlined),
+                selectedIcon: Icon(Icons.space_dashboard_rounded),
+                label: 'Tổng quan',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.schedule_outlined),
+                selectedIcon: Icon(Icons.schedule_rounded),
+                label: 'Lịch ăn',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.history_rounded),
+                label: 'Nhật ký',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.tune_rounded),
+                label: 'Cài đặt',
+              ),
+            ],
+          ),
         ),
       ),
     );

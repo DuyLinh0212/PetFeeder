@@ -2,367 +2,456 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class SchedulesScreen extends StatefulWidget {
   const SchedulesScreen({super.key});
-
   @override
   State<SchedulesScreen> createState() => _SchedulesScreenState();
 }
 
 class _SchedulesScreenState extends State<SchedulesScreen> {
   List<FeedingSchedule> _schedules = [];
-  bool _isLoading = true;
+  final _busy = <String>{};
+  bool _loading = true;
+  bool _failed = false;
 
   @override
   void initState() {
     super.initState();
-    _loadSchedules();
+    _load();
   }
 
-  Future<void> _loadSchedules() async {
-    setState(() => _isLoading = true);
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
     try {
       final list = await ApiService().getSchedules();
-      setState(() => _schedules = list);
-    } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Lỗi tải lịch: $e'), backgroundColor: AppTheme.accentCoral),
+        setState(
+          () => _schedules = list..sort((a, b) => a.time.compareTo(b.time)),
         );
       }
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _handleToggle(FeedingSchedule s) async {
+  Future<void> _toggle(FeedingSchedule s) async {
+    if (_busy.contains(s.id)) return;
+    setState(() => _busy.add(s.id));
     try {
       final updated = await ApiService().toggleSchedule(s.id);
       if (!mounted) return;
       setState(() {
-        final idx = _schedules.indexWhere((item) => item.id == s.id);
-        if (idx != -1) _schedules[idx] = updated;
+        final i = _schedules.indexWhere((item) => item.id == s.id);
+        if (i >= 0) _schedules[i] = updated;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${updated.enabled ? "Đã bật" : "Đã tắt"} lịch ${updated.name}'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Lỗi cập nhật: $e'), backgroundColor: AppTheme.accentCoral),
-      );
+    } catch (_) {
+      if (mounted) {
+        showFeedback(
+          context,
+          'Chưa cập nhật được lịch. Hãy thử lại.',
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy.remove(s.id));
     }
   }
 
-  Future<void> _handleDelete(FeedingSchedule s) async {
+  Future<void> _delete(FeedingSchedule s) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Xác nhận xóa lịch'),
-        content: Text('Bạn có chắc chắn muốn xóa "${s.name}" (${s.time}) không?'),
+        title: const Text('Xóa lịch ăn?'),
+        content: Text('Lịch “${s.name}” lúc ${s.time} sẽ được xóa.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Giữ lại'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Xóa', style: TextStyle(color: AppTheme.accentCoral, fontWeight: FontWeight.bold)),
+            child: const Text(
+              'Xóa lịch',
+              style: TextStyle(color: AppTheme.accentCoral),
+            ),
           ),
         ],
       ),
     );
-
-    if (confirm == true) {
-      try {
-        await ApiService().deleteSchedule(s.id);
-        if (!mounted) return;
-        setState(() => _schedules.removeWhere((item) => item.id == s.id));
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Đã xóa lịch cho ăn thành công')),
-        );
-      } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Lỗi xóa lịch: $e'), backgroundColor: AppTheme.accentCoral),
-        );
+    if (confirm != true || !mounted) return;
+    setState(() => _busy.add(s.id));
+    try {
+      if (!await ApiService().deleteSchedule(s.id)) throw Exception('delete');
+      if (!mounted) return;
+      setState(() => _schedules.removeWhere((item) => item.id == s.id));
+      showFeedback(context, 'Đã xóa lịch ăn.');
+    } catch (_) {
+      if (mounted) {
+        showFeedback(context, 'Chưa xóa được lịch. Hãy thử lại.', error: true);
       }
+    } finally {
+      if (mounted) setState(() => _busy.remove(s.id));
     }
   }
 
-  void _showAddScheduleSheet() {
-    TimeOfDay selectedTime = const TimeOfDay(hour: 7, minute: 0);
-    int selectedPortion = 35;
-    final nameController = TextEditingController(text: 'Bữa ăn');
-
-    showModalBottomSheet(
+  Future<void> _add() async {
+    final created = await showModalBottomSheet<FeedingSchedule>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheetState) {
-          final timeStr =
-              '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
-
-          return Container(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-              top: 24,
-              left: 20,
-              right: 20,
-            ),
-            decoration: const BoxDecoration(
-              color: AppTheme.surface,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.add_alarm_rounded, color: AppTheme.primary, size: 26),
-                    const SizedBox(width: 10),
-                    const Text(
-                      'Thêm lịch cho ăn mới',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.pop(ctx),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: nameController,
-                  decoration: InputDecoration(
-                    labelText: 'Tên bữa ăn (vd: Bữa sáng, Bữa xế)',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                InkWell(
-                  onTap: () async {
-                    final picked = await showTimePicker(context: ctx, initialTime: selectedTime);
-                    if (picked != null) {
-                      setSheetState(() => selectedTime = picked);
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: AppTheme.border),
-                      borderRadius: BorderRadius.circular(14),
-                      color: AppTheme.background,
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.access_time_rounded, color: AppTheme.primary),
-                        const SizedBox(width: 12),
-                        const Text('Giờ cho ăn:', style: TextStyle(fontWeight: FontWeight.w500)),
-                        const Spacer(),
-                        Text(
-                          timeStr,
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w900,
-                            color: AppTheme.primaryDark,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        const Icon(Icons.edit, size: 16, color: AppTheme.textMuted),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Khẩu phần ăn:', style: TextStyle(fontWeight: FontWeight.w600)),
-                    Text(
-                      '$selectedPortion gram',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.primary),
-                    ),
-                  ],
-                ),
-                Slider(
-                  value: selectedPortion.toDouble(),
-                  min: 10,
-                  max: 120,
-                  divisions: 22,
-                  activeColor: AppTheme.primary,
-                  onChanged: (val) => setSheetState(() => selectedPortion = val.round()),
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  height: 52,
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      try {
-                        final created = await ApiService().createSchedule(
-                          name: nameController.text.trim().isEmpty ? 'Bữa ăn $timeStr' : nameController.text.trim(),
-                          time: timeStr,
-                          portionG: selectedPortion,
-                          days: ["T2", "T3", "T4", "T5", "T6", "T7", "CN"],
-                          enabled: true,
-                        );
-                        if (!ctx.mounted) return;
-                        Navigator.pop(ctx);
-                        if (!mounted) return;
-                        setState(() => _schedules.add(created));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            backgroundColor: AppTheme.accentGreen,
-                            content: Text('Đã thêm lịch $timeStr và đồng bộ xuống ESP32!'),
-                          ),
-                        );
-                      } catch (e) {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Lỗi: $e'), backgroundColor: AppTheme.accentCoral),
-                        );
-                      }
-                    },
-                    child: const Text('LƯU VÀ ĐỒNG BỘ XUỐNG ESP32'),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
+      useSafeArea: true,
+      builder: (_) => const _ScheduleEditor(),
     );
+    if (!mounted || created == null) return;
+    setState(() {
+      _schedules.add(created);
+      _schedules.sort((a, b) => a.time.compareTo(b.time));
+    });
+    showFeedback(context, 'Đã lưu lịch ăn lúc ${created.time}.');
+  }
+
+  Widget _scheduleCard(FeedingSchedule s) => SectionCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    s.time,
+                    style: TextStyle(
+                      fontSize: 30,
+                      height: 1.1,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -1,
+                      color: s.enabled ? AppTheme.textMain : AppTheme.textMuted,
+                    ),
+                  ),
+                  StatusPill(
+                    label: '${s.portionG} g',
+                    icon: Icons.rice_bowl_outlined,
+                  ),
+                ],
+              ),
+            ),
+            Semantics(
+              label: 'Bật lịch ${s.name}',
+              child: Switch(
+                value: s.enabled,
+                onChanged: _busy.contains(s.id) ? null : (_) => _toggle(s),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          s.name,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.days.length == 7
+                        ? 'Lặp lại mỗi ngày'
+                        : s.days.join(' · '),
+                    style: const TextStyle(
+                      color: AppTheme.textMuted,
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                  ),
+                  Text(
+                    s.enabled ? 'Đang bật' : 'Tạm dừng',
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.5,
+                      color: s.enabled
+                          ? AppTheme.accentGreen
+                          : AppTheme.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Xóa lịch ${s.name}',
+              onPressed: _busy.contains(s.id) ? null : () => _delete(s),
+              icon: const Icon(
+                Icons.delete_outline_rounded,
+                size: 21,
+                color: AppTheme.textMuted,
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => PageContent(
+    child: RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: AppTheme.pagePadding,
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          const PageHeading(
+            title: 'Lịch cho ăn',
+            subtitle: 'Giờ ăn đều đặn, khẩu phần vừa đủ.',
+          ),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_failed)
+            EmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: 'Chưa tải được lịch ăn',
+              message: 'Kiểm tra kết nối và thử tải lại.',
+              action: OutlinedButton(
+                onPressed: _load,
+                child: const Text('Thử lại'),
+              ),
+            )
+          else ...[
+            if (_schedules.isEmpty)
+              const EmptyState(
+                icon: Icons.schedule_rounded,
+                title: 'Bữa ăn đầu tiên đang chờ',
+                message:
+                    'Thêm giờ ăn và khẩu phần. PetFeeder sẽ giúp bạn chăm bé đều đặn.',
+              )
+            else
+              ..._schedules.map(
+                (s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _scheduleCard(s),
+                ),
+              ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _add,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Thêm lịch ăn'),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
+class _ScheduleEditor extends StatefulWidget {
+  const _ScheduleEditor();
+  @override
+  State<_ScheduleEditor> createState() => _ScheduleEditorState();
+}
+
+class _ScheduleEditorState extends State<_ScheduleEditor> {
+  final _name = TextEditingController();
+  TimeOfDay _time = const TimeOfDay(hour: 7, minute: 0);
+  int _portion = 35;
+  bool _saving = false;
+  String? _error;
+  static const _week = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+  final _days = _week.toSet();
+  String get _timeText =>
+      '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}';
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_saving || _days.isEmpty) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final created = await ApiService().createSchedule(
+        name: _name.text.trim().isEmpty
+            ? 'Bữa ăn $_timeText'
+            : _name.text.trim(),
+        time: _timeText,
+        portionG: _portion,
+        days: _week.where(_days.contains).toList(),
+        enabled: true,
+      );
+      if (mounted) Navigator.pop(context, created);
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _error = 'Chưa lưu được lịch. Kiểm tra kết nối rồi thử lại.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadSchedules,
-              child: _schedules.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.schedule_rounded, size: 64, color: AppTheme.textLight),
-                          const SizedBox(height: 12),
-                          const Text('Chưa có lịch cho ăn nào', style: TextStyle(fontSize: 16, color: AppTheme.textMuted)),
-                          const SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            onPressed: _showAddScheduleSheet,
-                            icon: const Icon(Icons.add),
-                            label: const Text('Tạo lịch đầu tiên'),
-                          ),
-                        ],
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_saving,
+    child: Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Expanded(
+                    child: PageHeading(
+                      title: 'Thêm lịch ăn',
+                      subtitle: 'Chọn giờ, khẩu phần và ngày lặp lại.',
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Đóng biểu mẫu',
+                    onPressed: _saving ? null : () => Navigator.pop(context),
+                    style: IconButton.styleFrom(
+                      backgroundColor: AppTheme.background,
+                    ),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              TextField(
+                controller: _name,
+                enabled: !_saving,
+                maxLength: 60,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Tên bữa ăn',
+                  hintText: 'Ví dụ: Bữa sáng',
+                  counterText: '',
+                ),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(22),
+                  side: const BorderSide(color: AppTheme.border),
+                ),
+                leading: const Icon(
+                  Icons.schedule_rounded,
+                  color: AppTheme.primary,
+                ),
+                title: const Text('Giờ ăn'),
+                subtitle: Text(
+                  _timeText,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.primary,
+                  ),
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: _saving
+                    ? null
+                    : () async {
+                        final picked = await showTimePicker(
+                          context: context,
+                          initialTime: _time,
+                        );
+                        if (mounted && picked != null) {
+                          setState(() => _time = picked);
+                        }
+                      },
+              ),
+              const SizedBox(height: 20),
+              PortionSelector(
+                value: _portion,
+                max: 120,
+                onChanged: _saving ? null : (v) => setState(() => _portion = v),
+              ),
+              const Text(
+                'Lặp lại vào',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: _week
+                    .map(
+                      (d) => FilterChip(
+                        label: Text(d),
+                        selected: _days.contains(d),
+                        labelStyle: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w700,
+                          color: _days.contains(d)
+                              ? Colors.white
+                              : AppTheme.textMain,
+                        ),
+                        onSelected: _saving
+                            ? null
+                            : (selected) => setState(
+                                () => selected ? _days.add(d) : _days.remove(d),
+                              ),
                       ),
                     )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                      itemCount: _schedules.length + 1,
-                      separatorBuilder: (ctx, idx) => const SizedBox(height: 12),
-                      itemBuilder: (ctx, idx) {
-                        if (idx == _schedules.length) {
-                          // Footer button
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: OutlinedButton.icon(
-                              onPressed: _showAddScheduleSheet,
-                              icon: const Icon(Icons.add_alarm_rounded, color: AppTheme.primary),
-                              label: const Text('THÊM LỊCH MỚI', style: TextStyle(color: AppTheme.primary, fontWeight: FontWeight.bold)),
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 16),
-                                side: const BorderSide(color: AppTheme.primary),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                              ),
-                            ),
-                          );
-                        }
-
-                        final s = _schedules[idx];
-                        return Card(
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: s.enabled ? AppTheme.primaryLight : AppTheme.background,
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
-                                  child: Icon(
-                                    Icons.alarm_rounded,
-                                    color: s.enabled ? AppTheme.primary : AppTheme.textLight,
-                                    size: 26,
-                                  ),
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Text(
-                                            s.time,
-                                            style: TextStyle(
-                                              fontSize: 24,
-                                              fontWeight: FontWeight.w900,
-                                              color: s.enabled ? AppTheme.textMain : AppTheme.textMuted,
-                                              letterSpacing: -0.5,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                            decoration: BoxDecoration(
-                                              color: AppTheme.background,
-                                              borderRadius: BorderRadius.circular(8),
-                                              border: Border.all(color: AppTheme.border),
-                                            ),
-                                            child: Text(
-                                              '${s.portionG}g',
-                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        s.name,
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w500,
-                                          color: s.enabled ? AppTheme.textMain : AppTheme.textMuted,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Switch(
-                                  value: s.enabled,
-                                  activeTrackColor: AppTheme.primary,
-                                  onChanged: (val) => _handleToggle(s),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline_rounded, color: AppTheme.textLight),
-                                  onPressed: () => _handleDelete(s),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-    );
-  }
+                    .toList(),
+              ),
+              if (_days.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Chọn ít nhất một ngày.',
+                    style: TextStyle(color: AppTheme.accentCoral),
+                  ),
+                ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(
+                    _error!,
+                    style: const TextStyle(color: AppTheme.accentCoral),
+                  ),
+                ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: _saving || _days.isEmpty ? null : _save,
+                  child: Text(_saving ? 'Đang lưu…' : 'Lưu lịch ăn'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }

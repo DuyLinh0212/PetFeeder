@@ -2,227 +2,149 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback onRefresh;
-
   const SettingsScreen({super.key, required this.onRefresh});
-
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _urlController = TextEditingController();
+  final _url = TextEditingController();
+  final _form = GlobalKey<FormState>();
   List<AlertNotification> _alerts = [];
-  bool _isLoadingAlerts = true;
-  bool _isTesting = false;
+  bool _loading = true;
+  bool _failed = false;
+  bool _testing = false;
+  bool _clearing = false;
+  String? _connectionMessage;
+  bool _connectionOk = false;
 
   @override
   void initState() {
     super.initState();
-    _urlController.text = ApiService().baseUrl;
+    _url.text = ApiService().baseUrl;
     _loadAlerts();
   }
 
-  Future<void> _loadAlerts() async {
-    setState(() => _isLoadingAlerts = true);
-    try {
-      final list = await ApiService().getNotifications();
-      setState(() => _alerts = list);
-    } catch (_) {
-    } finally {
-      if (mounted) setState(() => _isLoadingAlerts = false);
-    }
-  }
-
-  Future<void> _testConnection() async {
-    setState(() => _isTesting = true);
-    try {
-      ApiService().setBaseUrl(_urlController.text.trim());
-      final status = await ApiService().getDeviceStatus();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: AppTheme.accentGreen,
-          content: Text('Kết nối Backend thành công! ESP32: ${status.online ? "Trực tuyến" : "Ngoại tuyến"}'),
-        ),
-      );
-      widget.onRefresh();
-      _loadAlerts();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: AppTheme.accentCoral,
-          content: Text('Không thể kết nối Backend tại URL này: $e'),
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _isTesting = false);
-    }
-  }
-
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Cài đặt & Cảnh báo')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+  void dispose() {
+    _url.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadAlerts() async {
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
+    try {
+      final alerts = await ApiService().getNotifications();
+      if (mounted) setState(() => _alerts = alerts);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _connect() async {
+    if (_testing || !_form.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _testing = true;
+      _connectionMessage = null;
+    });
+    final candidate = _url.text.trim().replaceFirst(RegExp(r'/+$'), '');
+    try {
+      final status = await ApiService().getDeviceStatus(serverUrl: candidate);
+      if (!mounted) return;
+      ApiService().setBaseUrl(candidate);
+      setState(() {
+        _connectionOk = true;
+        _connectionMessage = status.online
+            ? 'Đã kết nối. Thiết bị sẵn sàng chăm bé.'
+            : 'Đã kết nối máy chủ. Thiết bị hiện ngoại tuyến.';
+      });
+      widget.onRefresh();
+      await _loadAlerts();
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _connectionOk = false;
+          _connectionMessage =
+              'Không kết nối được. Kiểm tra địa chỉ và mạng Wi-Fi rồi thử lại.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _testing = false);
+    }
+  }
+
+  Future<void> _clearAlerts() async {
+    if (_clearing) return;
+    setState(() => _clearing = true);
+    try {
+      if (!await ApiService().clearNotifications()) throw Exception('clear');
+      if (mounted) setState(() => _alerts = []);
+    } catch (_) {
+      if (mounted) {
+        showFeedback(
+          context,
+          'Chưa xóa được cảnh báo. Hãy thử lại.',
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _clearing = false);
+    }
+  }
+
+  Widget _alert(AlertNotification a) {
+    final color = a.level == 'error'
+        ? AppTheme.accentCoral
+        : a.level == 'warning'
+        ? AppTheme.accentAmber
+        : AppTheme.accentGreen;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: SectionCard(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // API Server Configuration Card
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.dns_rounded, color: AppTheme.primary),
-                        SizedBox(width: 8),
-                        Text(
-                          'Cấu hình địa chỉ Backend',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _urlController,
-                      decoration: InputDecoration(
-                        labelText: 'REST API Base URL',
-                        hintText: 'http://localhost:3000 hoặc http://10.0.2.2:3000',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                        prefixIcon: const Icon(Icons.link_rounded),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      children: [
-                        ActionChip(
-                          label: const Text('Localhost (3000)'),
-                          onPressed: () => setState(() => _urlController.text = 'http://localhost:3000'),
-                        ),
-                        ActionChip(
-                          label: const Text('Android Emulator (10.0.2.2)'),
-                          onPressed: () => setState(() => _urlController.text = 'http://10.0.2.2:3000'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _isTesting ? null : _testConnection,
-                        icon: _isTesting
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
-                            : const Icon(Icons.wifi_find_rounded),
-                        label: const Text('LƯU & KIỂM TRA KẾT NỐI'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            Icon(
+              a.level == 'error'
+                  ? Icons.error_outline_rounded
+                  : a.level == 'warning'
+                  ? Icons.warning_amber_rounded
+                  : Icons.info_outline_rounded,
+              color: color,
             ),
-            const SizedBox(height: 20),
-
-            // Alert Notifications Center (FR-07)
-            Row(
-              children: [
-                const Icon(Icons.notifications_active_rounded, color: AppTheme.accentCoral),
-                const SizedBox(width: 8),
-                const Text(
-                  'Cảnh báo hệ thống',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                const Spacer(),
-                if (_alerts.isNotEmpty)
-                  TextButton(
-                    onPressed: () async {
-                      await ApiService().clearNotifications();
-                      _loadAlerts();
-                    },
-                    child: const Text('Xóa tất cả', style: TextStyle(color: AppTheme.textMuted)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    a.title,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            _isLoadingAlerts
-                ? const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
-                : _alerts.isEmpty
-                    ? Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surface,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppTheme.border),
-                        ),
-                        child: const Center(
-                          child: Text('Không có cảnh báo mới nào.', style: TextStyle(color: AppTheme.textMuted)),
-                        ),
-                      )
-                    : Column(
-                        children: _alerts.map((a) {
-                          Color color = AppTheme.accentGreen;
-                          IconData icon = Icons.info_outline;
-                          if (a.level == 'error') {
-                            color = AppTheme.accentCoral;
-                            icon = Icons.error_outline;
-                          } else if (a.level == 'warning') {
-                            color = AppTheme.accentAmber;
-                            icon = Icons.warning_amber_rounded;
-                          }
-
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Card(
-                              child: ListTile(
-                                leading: Icon(icon, color: color, size: 28),
-                                title: Text(a.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                                subtitle: Text(a.message, style: const TextStyle(fontSize: 12)),
-                                trailing: a.read
-                                    ? null
-                                    : Container(
-                                        width: 8,
-                                        height: 8,
-                                        decoration: const BoxDecoration(
-                                          color: AppTheme.primary,
-                                          shape: BoxShape.circle,
-                                        ),
-                                      ),
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-            const SizedBox(height: 24),
-
-            // Hardware & Project Specs (BaoCaoGiaiDoan2.docx)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Thông tin đề tài IoT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  const SizedBox(height: 6),
+                  Text(
+                    a.message,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppTheme.textMuted,
+                      height: 1.5,
+                    ),
+                  ),
+                  if (!a.read) ...[
                     const SizedBox(height: 8),
-                    _buildInfoRow('Hệ thống:', 'Hệ thống cho thú cưng ăn tự động'),
-                    _buildInfoRow('Vi điều khiển:', 'ESP32 DevKit V1 (240 MHz)'),
-                    _buildInfoRow('Cơ cấu cấp thức ăn:', 'Servo SG90 / MG996R (Closed-loop)'),
-                    _buildInfoRow('Cơ cấu chống kẹt:', 'Anti-Jam Oscillating Servo'),
-                    _buildInfoRow('Cảm biến bồn chứa:', 'Cảm biến siêu âm HC-SR04'),
-                    _buildInfoRow('Cảm biến cân bát:', 'HX711 24-bit ADC + Load Cell'),
-                    _buildInfoRow('Giao thức truyền thông:', 'MQTT (Mosquitto Broker) & REST API'),
+                    StatusPill(label: 'Mới', color: color),
                   ],
-                ),
+                ],
               ),
             ),
           ],
@@ -231,21 +153,209 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildInfoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  @override
+  Widget build(BuildContext context) => PageContent(
+    child: RefreshIndicator(
+      onRefresh: _loadAlerts,
+      child: ListView(
+        padding: AppTheme.pagePadding,
+        physics: const AlwaysScrollableScrollPhysics(),
         children: [
-          SizedBox(
-            width: 140,
-            child: Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+          const PageHeading(
+            title: 'Kết nối & cài đặt',
+            subtitle: 'Thiết lập máy chủ và theo dõi cảnh báo.',
           ),
-          Expanded(
-            child: Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          SectionCard(
+            child: Form(
+              key: _form,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: const BoxDecoration(
+                          color: AppTheme.primaryLight,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.wifi_rounded,
+                          color: AppTheme.primary,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Kết nối thiết bị',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Nhập địa chỉ máy chủ PetFeeder. Điện thoại và máy chủ cần truy cập được cùng mạng.',
+                    style: TextStyle(color: AppTheme.textMuted, height: 1.5),
+                  ),
+                  const SizedBox(height: 20),
+                  TextFormField(
+                    controller: _url,
+                    enabled: !_testing,
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    textInputAction: TextInputAction.done,
+                    onFieldSubmitted: (_) => _connect(),
+                    decoration: const InputDecoration(
+                      labelText: 'Địa chỉ máy chủ',
+                      hintText: 'http://192.168.1.15:3000',
+                      prefixIcon: Icon(Icons.link_rounded),
+                    ),
+                    validator: (value) {
+                      final uri = Uri.tryParse(value?.trim() ?? '');
+                      if (uri == null ||
+                          !['http', 'https'].contains(uri.scheme) ||
+                          uri.host.isEmpty ||
+                          uri.hasQuery ||
+                          uri.hasFragment ||
+                          uri.userInfo.isNotEmpty) {
+                        return 'Nhập địa chỉ http:// hoặc https:// hợp lệ.';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _testing ? null : _connect,
+                      icon: _testing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.wifi_find_rounded),
+                      label: Text(_testing ? 'Đang kết nối…' : 'Lưu kết nối'),
+                    ),
+                  ),
+                  if (_connectionMessage != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _connectionMessage!,
+                      style: TextStyle(
+                        color: _connectionOk
+                            ? AppTheme.accentGreen
+                            : AppTheme.accentCoral,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: const EdgeInsets.only(bottom: 8),
+                    title: const Text(
+                      'Tùy chọn phát triển',
+                      style: TextStyle(fontSize: 13, color: AppTheme.textMuted),
+                    ),
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ActionChip(
+                            label: const Text('Máy tính này'),
+                            onPressed: _testing
+                                ? null
+                                : () => _url.text = 'http://localhost:3000',
+                          ),
+                          ActionChip(
+                            label: const Text('Giả lập Android'),
+                            onPressed: _testing
+                                ? null
+                                : () => _url.text = 'http://10.0.2.2:3000',
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 28),
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text(
+                'Thông báo & cảnh báo',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              if (_alerts.isNotEmpty && !_failed)
+                TextButton(
+                  onPressed: _clearing ? null : _clearAlerts,
+                  child: Text(_clearing ? 'Đang xóa…' : 'Xóa tất cả'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_failed)
+            EmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: 'Chưa tải được thông báo',
+              message: 'Kiểm tra kết nối rồi thử lại.',
+              action: OutlinedButton(
+                onPressed: _loadAlerts,
+                child: const Text('Thử lại'),
+              ),
+            )
+          else if (_alerts.isEmpty)
+            const EmptyState(
+              icon: Icons.notifications_none_rounded,
+              title: 'Chưa có cảnh báo',
+              message:
+                  'Bạn sẽ thấy thông báo ở đây khi thiết bị cần được chú ý.',
+            )
+          else
+            ..._alerts.map(_alert),
+          const SizedBox(height: 20),
+          const Card(
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              childrenPadding: EdgeInsets.fromLTRB(20, 0, 20, 20),
+              leading: Icon(
+                Icons.info_outline_rounded,
+                color: AppTheme.primary,
+              ),
+              title: Text('Về PetFeeder'),
+              children: [
+                Text(
+                  'Hệ thống cho thú cưng ăn tự động\n\nESP32 · Servo cấp hạt và chống kẹt\nHC-SR04 · Cảm biến mức hạt\nHX711 + Load Cell · Cân thức ăn\nMQTT & REST API · Kết nối thiết bị',
+                  style: TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 13,
+                    height: 1.8,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
 }
