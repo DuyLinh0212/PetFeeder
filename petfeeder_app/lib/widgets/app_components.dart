@@ -195,9 +195,9 @@ class PortionSelector extends StatelessWidget {
       ),
       Slider(
         value: value.toDouble(),
-        min: 10,
+        min: max < 10 ? max.toDouble() : 10,
         max: max.toDouble(),
-        divisions: (max - 10) ~/ 5,
+        divisions: max > 10 ? ((max - 10) ~/ 5).clamp(1, 1000) : null,
         label: '$value g',
         semanticFormatterCallback: (v) => '${v.round()} gram',
         onChanged: onChanged == null ? null : (v) => onChanged!(v.round()),

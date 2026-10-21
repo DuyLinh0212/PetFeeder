@@ -1,93 +1,82 @@
-# PetFeeder - Hệ Thống Cho Thú Cưng Ăn Tự Động (IoT)
+# PetFeeder Nhóm 7 — hệ thống cho thú cưng ăn tự động
 
-Đồ án môn Internet of Things - Khoa Công nghệ Thông tin, Trường Đại học Công Thương TP. HCM.
+Thành viên: Nguyễn Duy Linh, Ngô Công Danh, Lê Hoàng Bảo Long.
 
-## 👥 Thành viên nhóm thực hiện (Nhóm 7)
-1. **Nguyễn Duy Linh** - 2001230443 (14DHTH04)
-2. **Ngô Công Danh** - 2001230091 (14DHTH13)
-3. **Lê Hoàng Bảo Long** - 2001230404 (14DHTH10)
+Tích hợp giao diện `feature/mobile-ui`, bảo vệ `feature/firmware-safety-and-dispensing` và lưu trữ/giao thức của `long` trên main. Flutter → REST API Node.js → MQTT → ESP32. Chỉ có một sơ đồ PetFeeder/diagram.json; giữ nguyên toàn bộ 10 linh kiện, vị trí và dây nối: ESP32, HX711, HC-SR04, hai servo, OLED, nút bấm, hai LED và còi.
 
----
+## Mở đúng dự án
 
-## 🏛️ Kiến trúc tổng thể hệ thống
+Mở `PetFeeder_Main_Long.code-workspace` tại thư mục repository. Flutter SDK và PlatformIO lấy từ môi trường máy, không dùng đường dẫn riêng của thành viên.
 
-```
-Mobile App (Flutter)
-       │
-       │ HTTP / REST API (Port 3000)
-       ▼
-Backend (Node.js Express)
-       │
-       │ MQTT Publish / Subscribe (Port 1883)
-       ▼
-Mosquitto Broker (Ubuntu WSL / Localhost / Cloud Broker)
-       │
-       │ Push / Telemetry
-       ▼
-ESP32 Controller trên Wokwi (Servo vòng kín, Anti-jam, HX711, HC-SR04, OLED, Nút bấm)
-```
+| Linh kiện | GPIO giữ theo main |
+|---|---|
+| HC-SR04 TRIG / ECHO | 5 / 18 |
+| HX711 DT / SCK | 19 / 23 |
+| Servo cấp / chống kẹt | 13 / 12 |
+| OLED SDA / SCL | 21 / 22 |
+| Nút bấm | 4 |
+| LED xanh / LED đỏ / còi | 2 / 15 / 14 |
 
----
+## Chạy mạch và app
 
-## 📁 Cấu trúc thư mục dự án
+Cần Node.js >=22.13, Flutter SDK, PlatformIO và Wokwi Simulator có license hợp lệ.
 
-```
-IoT/
-├── PetFeeder/              # Mã nguồn firmware ESP32 (PlatformIO & Wokwi Simulation)
-│   ├── src/main.cpp        # Logic điều khiển vòng kín, chống kẹt, lọc lệnh trùng, MQTT
-│   ├── diagram.json        # Sơ đồ kết nối phần cứng mô phỏng trên Wokwi
-│   └── platformio.ini      # Cấu hình PlatformIO & thư viện
-│
-├── petfeeder_backend/      # REST API & MQTT Gateway (Node.js Express)
-│   ├── src/server.js       # Khởi chạy Express Server
-│   ├── src/mqttClient.js   # Kết nối Mosquitto MQTT broker
-│   ├── src/storage.js      # Hệ thống lưu trữ dữ liệu & bộ nhớ bền vững (Memory Systems)
-│   └── src/routes/         # Các API: feeding, schedules, device, notifications
-│
-├── petfeeder_app/          # Ứng dụng di động (Flutter)
-│   ├── lib/main.dart       # Ứng dụng chính với 4 tab điều khiển
-│   ├── lib/screens/        # Dashboard (Giám sát & Cho ăn), Schedules, History, Settings
-│   ├── lib/theme/          # Ngôn ngữ thiết kế (Terracotta, Slate, Sage Green)
-│   └── lib/services/       # API Service kết nối Backend
-│
-└── BaoCaoGiaiDoan2.docx    # Báo cáo kiến trúc và thiết kế hệ thống Giai đoạn 2
-```
+1. Trong petfeeder_backend: npm ci, rồi npm start. Backend ở http://127.0.0.1:3000.
+2. Trong petfeeder_app: flutter pub get, rồi flutter run -d chrome --dart-define=API_URL=http://127.0.0.1:3000.
+3. Trong PetFeeder: pio run. Trên máy Long có thể chạy CHAY.ps1 -Mode build từ thư mục gốc.
+4. Mở PetFeeder/diagram.json, F1 → Wokwi: Start Simulator.
+5. Nếu Serial báo STORAGE_NOT_INITIALIZED, gửi INIT_NEW_DEVICE để tạo bộ nhớ thiết bị mới. Lệnh này format bộ nhớ; không dùng trong bài giữ dữ liệu qua reset.
+6. Gửi status, chờ time_valid=1 và MQTT kết nối. Trên app, vào Cài đặt, nhập tên thức ăn, xác nhận đã kiểm tra và lưu. Chờ CONFIG_APPLIED hoặc xem config_version trong /api/state.
+7. Cấp 20g từ app hoặc nhấn nút; xem OLED, Serial và Nhật ký. API nhận lệnh chưa phải kết quả SUCCESS.
 
----
+Broker và prefix giữ theo main: broker.emqx.io:1883, duylinh0212/petfeeder/v1. Có thể sao chép petfeeder_backend/.env.example thành .env và PetFeeder/include/secrets.example.h thành secrets.h để đặt broker riêng. Broker và prefix hai phía phải khớp; chỉ chạy một phiên mạch cùng device/topic.
 
-## ⚙️ Các tính năng cốt lõi
+Để backend phục vụ giao diện tại /, chạy flutter build web --no-wasm-dry-run --no-web-resources-cdn trong petfeeder_app trước. Android Emulator dùng http://10.0.2.2:3000. Điện thoại thật dùng IP LAN máy tính trong Cài đặt; backend phải chạy với HOST=0.0.0.0.
 
-1. **Điều khiển cấp thức ăn định lượng vòng kín (Closed-loop)**: Đo khối lượng thực tế rơi xuống bát bằng Load Cell + HX711, cấp theo từng nhịp nhỏ cho tới khi đạt đúng khẩu phần mục tiêu (FR-02, FR-03).
-2. **Cơ chế chống cho ăn trùng & Ghi đè (Duplicate Feed Protection & Override)**: Chặn cấp thêm nếu bữa trước diễn ra cách đó ít hơn ngưỡng an toàn $T_{safe}$ (180s); cho phép người dùng nhấn giữ nút tại chỗ > 2.5s hoặc gạt Switch Override trên ứng dụng để cưỡng bức cấp (Section 2.3.2).
-3. **Cơ chế tự phục hồi chống kẹt hạt (Anti-Jam Recovery)**: Tự động phát hiện khi khối lượng không tăng, đảo chiều Servo chính và kích hoạt cơ cấu phụ lắc phễu 3 lần liên tiếp trước khi báo lỗi (Section 2.3.3).
-4. **Hoạt động ngoại tuyến khi mất Internet (FR-04)**: Đồng bộ danh sách lịch từ Backend vào bộ nhớ ESP32, tự động kích hoạt cấp hạt đúng giờ kể cả khi mất kết nối mạng.
-5. **Theo dõi mức thức ăn & Cân bát theo thời gian thực (FR-05, FR-06)**: Cảm biến siêu âm HC-SR04 đo lượng hạt còn lại trong phễu chứa, cân Load Cell báo gram thức ăn trong bát.
+## Hai chế độ trên cùng mạch
 
----
+DEMO_AUTO giữ cách main tự mô phỏng hạt rơi: mỗi xung cộng tối đa 5g vào bát và trừ kho. OLED và app ghi rõ số liệu demo. Đây không phải bằng chứng HX711 hay cơ cấu thật đã đo/cấp chính xác.
 
-## 🚀 Hướng dẫn cài đặt và chạy thử nghiệm
+Gửi sim manual trên Serial để thử cảm biến bằng tay. Chỉnh HC-SR04 còn hạt, đợi cân ổn định rồi yêu cầu cấp. Khi servo chạy, tăng HX711 từ 0kg tới 0.020kg và giữ ổn định ít nhất 0,7 giây để thử 20g. Cân không tăng sẽ kích hoạt chống kẹt rồi có thể trả JAM_ERROR. Tải HX711 là tổng khối lượng bát, còn khẩu phần là lượng cấp thêm.
 
-### 1. Khởi chạy Mosquitto Broker (Ubuntu WSL)
-```bash
-sudo service mosquitto start
-```
+| Serial | Tác dụng |
+|---|---|
+| status | Cân, hiệu chuẩn, giờ hợp lệ, busy |
+| sim auto / sim manual | Chọn nguồn dữ liệu Wokwi khi không cấp |
+| sim empty | Dọn bát demo auto, không xóa tổng đã cấp |
+| sim jam on / sim jam off | Bật/tắt tình huống không rơi hạt trong demo auto |
+| food CONFIRMED | Chủ xác nhận thức ăn qua Serial; app sync có thể ghi đè |
+| tare EMPTY | Lưu offset khi bát rỗng; không tự chạy lúc boot |
+| factor N | Đổi hệ số cân rồi hiệu chuẩn lại |
+| reconcile CHECKED | Sau kiểm tra phiên gián đoạn, mở khóa và giữ dự trù khẩu phần ngày |
 
-### 2. Khởi chạy Backend Server
-```bash
-cd petfeeder_backend
-npm install
-npm start
-```
-* Backend API hoạt động tại: `http://localhost:3000`
-* Tài liệu endpoint tại: `http://localhost:3000/api`
+Thiết bị thật: build `pio run -e esp32dev-hardware`, hiệu chuẩn cân và kiểm tra cơ cấu. Wokwi dùng `pio run -e esp32dev` (mặc định), với firmware.merged.bin riêng. Chưa có RTC, camera, RFID hoặc cảm biến hiện diện bát chuyên dụng.
 
-### 3. Mô phỏng ESP32 trên Wokwi
-* Mở thư mục `PetFeeder` trong VS Code.
-* Mở file `diagram.json` và nhấn nút **Start Simulation** (phím tắt `F1` -> `Wokwi: Start Simulator`).
+## Hành vi sau tích hợp
 
-### 4. Khởi chạy Mobile App (Flutter)
-```bash
-cd petfeeder_app
-flutter pub get
-flutter run -d chrome  # hoặc flutter run trên thiết bị / emulator
-```
+- Giữ bốn tab, trạng thái tab đã mở, giao diện tiếng Việt và kiểm tra kết nối trước khi lưu địa chỉ. Địa chỉ và yêu cầu cho ăn chưa rõ kết quả được lưu qua lần mở app tiếp theo.
+- Khoảng chờ 180 giây là bắt buộc theo C03; không có nút ép cấp hoặc nhấn giữ để vượt bảo vệ. API vẫn nhận trường `override` và từ chối `true` bằng `OVERRIDE_NOT_SUPPORTED`.
+- Khẩu phần là lượng **cấp thêm**. Mặc định bát tối đa 150g, tối đa 200g/ngày, 6 phiên/ngày, 15 nhịp/phiên; kiểm tra bát trước khi cấp. Các ngưỡng này nằm trong cấu hình chung của API và firmware.
+- Cấp thô/tinh, chờ cân ổn định, dừng khi cân giảm bất thường, lỗi cảm biến, hết hạt, quá lượng hoặc hết nhịp. Không báo SUCCESS cho phiên cấp thiếu/quá lượng.
+- “Gửi lại cùng mã” chỉ gửi lại payload cũ, không cấp một bữa mới. “Cấp phần còn thiếu” trong Nhật ký tạo yêu cầu có `retry_of` cho đúng phần còn thiếu của phiên PARTIAL/JAM_ERROR/TIMEOUT đã biết lượng thực cấp; không tự gửi, không dùng khi lượng chưa xác định và không cấp bù trùng cùng phiên.
+- Giữ tối đa 10 lịch; lịch, chống lặp, hạn mức, hiệu chuẩn, outbox và phiên gián đoạn tồn tại qua reset. Các sự kiện cân tăng/giảm ngoài phiên và theo dõi thức ăn cũ vẫn được ghi riêng.
+- Backend tự nhập dữ liệu `data/database.json` sang SQLite một lần, giữ nguyên tệp gốc, lịch, lịch sử, cảnh báo và trạng thái đã đọc. Xóa nhật ký chỉ ẩn hàng, không xóa khóa chống lặp hoặc hạn mức.
+
+## Các phần Long đã ghép
+
+- C01/C06: kiểm tra yêu cầu xác minh thú và xác nhận thức ăn của chủ. Chưa có nhận dạng thú hoặc phân loại thức ăn bằng cảm biến.
+- C02: khoảng chờ, hạn mức mỗi lần/ngày và dự trù phiên đang cấp. Mọi nút cấp đều qua kiểm tra; không có override vượt các giới hạn này.
+- C04/N15: ghi nhận còn thức ăn, cân giảm chưa rõ nguyên nhân, mất số đo và nhắc kiểm tra thức ăn cũ. Quan sát nằm trong cảnh báo/sự kiện; không kết luận thú đã ăn chỉ từ cân giảm.
+- N16–N18: LittleFS lưu mã phiên, kết quả, lịch, hiệu chuẩn và dự trù; đóng servo lúc boot, khóa phiên gián đoạn chờ kiểm tra, không tare lúc boot.
+- N19–N23: lịch chạy offline khi còn giờ hợp lệ; lọc CN=0 đến T7=6; giữ dấu đã chạy qua sync/reset; bỏ lịch trễ từ 60 giây, không cấp dồn; đối soát tối đa 7 ngày.
+- N24/N25: app lưu ID và payload trước khi gửi, retry giữ nguyên cả thời hạn; API và ESP32 cùng kiểm tra hạn.
+- N26/N27: event_id chống ghi trùng, giữ trạng thái cuối trước sự kiện tiến độ muộn, outbox chờ ACK đã lưu, bỏ retained replay; MQTT/heartbeat chạy trong lúc cấp và chống kẹt.
+- N28: kiểm tra dữ liệu ở API và ESP32; giữ null khi lượng chưa xác định.
+
+POST /api/feeding/feed yêu cầu command_id, portion, override:false, created_at và expires_at; `retry_of` là tùy chọn khi cấp phần còn thiếu. Lấy ID/giờ tại /api/id. Dùng nút Gửi lại cùng mã khi phản hồi chưa rõ. Cấu hình/lịch dùng /sync, sự kiện dùng /events và xác nhận dùng /ack trên cùng prefix MQTT. Xem [giao thức backend](petfeeder_backend/README.md).
+
+## Kiểm tra
+
+Chạy lại: `npm ci` và `npm test` trong petfeeder_backend; `flutter pub get`, `flutter analyze`, `flutter test`, `flutter build apk --release` và `flutter build web --no-wasm-dry-run --no-web-resources-cdn` trong petfeeder_app; `pio run -e esp32dev -e esp32dev-hardware` trong PetFeeder.
+
+Xem [bảng đối chiếu đủ 36 case và kết quả kiểm tra](MERGE_VALIDATION.md). Test dùng mô hình thiết bị và broker MQTT cục bộ; không phát lệnh lên máy cho ăn thật. Chưa xác nhận các kịch bản trên phần cứng/Wokwi tương tác. Cắt nguồn, độ bền flash, hiệu chuẩn và cơ cấu cần thử thực tế.

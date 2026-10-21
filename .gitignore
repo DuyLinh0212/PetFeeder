@@ -8,6 +8,7 @@ npm-debug.log*
 
 # Flutter / Dart
 .dart_tool/
+**/.kotlin/
 .idea/
 *.iml
 build/
@@ -30,3 +31,14 @@ system-flow.png
 # Local project guides
 HUONG_DAN_THUC_HIEN_18_KICH_BAN.md
 petfeeder_app/design/UI_REVIEW.md
+
+# Local runtime state and broker credentials
+**/data/
+**/.env
+**/.env.*
+!**/.env.example
+PetFeeder/include/secrets.h
+work/
+**/local.properties
+**/*.db*
+**/*.sqlite*

@@ -8,7 +8,11 @@ import 'screens/schedules_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/settings_screen.dart';
 
-void main() => runApp(const PetFeederApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ApiService().initialize();
+  runApp(const PetFeederApp());
+}
 
 class PetFeederApp extends StatelessWidget {
   const PetFeederApp({super.key});

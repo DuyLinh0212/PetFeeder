@@ -23,14 +23,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _portion = 30;
   bool _submitting = false;
 
-  Future<void> _feed({bool override = false}) async {
+  Future<void> _feed({bool retry = false}) async {
     if (_submitting || widget.status?.online != true) return;
     setState(() => _submitting = true);
     Map<String, dynamic>? result;
     try {
       result = await ApiService().feedNow(
         portion: _portion,
-        override: override,
+        override: false,
+        retry: retry,
       );
       if (!mounted) return;
       if (result['success'] == true) {
@@ -41,7 +42,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         showFeedback(
           context,
-          'Chưa gửi được lệnh. Hãy kiểm tra kết nối rồi thử lại.',
+          'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã nếu đã gửi lệnh.',
           error: true,
         );
       }
@@ -49,8 +50,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (mounted) setState(() => _submitting = false);
     }
     if (!mounted || result == null || result['success'] == true) return;
-    final duplicate = result['code'] == 'BLOCKED_DUPLICATE';
-    final confirmed = await showDialog<bool>(
+    final duplicate = [
+      'BLOCKED_DUPLICATE',
+      'COOLDOWN',
+    ].contains(result['code']);
+    await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         icon: Icon(
@@ -58,22 +62,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
           color: AppTheme.accentAmber,
         ),
         title: Text(duplicate ? 'Bữa ăn vừa được cấp' : 'Chưa thể cho ăn'),
-        content: Text(result!['message'] as String),
+        content: Text(
+          duplicate
+              ? 'Vui lòng đợi hết khoảng chờ bảo vệ rồi mới cho ăn tiếp.'
+              : result!['message'] as String,
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Đóng'),
           ),
-          if (duplicate)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Vẫn cho ăn'),
-            ),
         ],
       ),
     );
-    // Override is explicit and applies to this request only.
-    if (confirmed == true && mounted) await _feed(override: true);
   }
 
   String _lastMeal(DeviceStatus? status) {
@@ -103,6 +104,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'OVERRIDE FEED' => 'Đang cấp bữa ăn bổ sung',
     'DUNG: THU AN!' => 'Đã dừng cấp hạt khi bé đang ăn',
     'CAP THIEU!' => 'Lượng hạt cấp chưa đủ',
+    'PARTIAL' => 'Lượng hạt cấp chưa đủ',
+    'SENSOR_ERROR' => 'Cần kiểm tra cảm biến',
+    'COOLDOWN' => 'Đang trong khoảng chờ bảo vệ',
+    'RECONCILIATION_REQUIRED' => 'Cần kiểm tra phiên cấp bị gián đoạn',
+    'UNVERIFIED' => 'Chờ chủ xác nhận thức ăn',
+    'UNKNOWN_PET' => 'Chưa xác minh được thú cưng',
+    'DANG CAP' => 'Đang cấp thức ăn',
     'XU LY KET!' => 'Đang xử lý hạt bị kẹt',
     'KHOI DONG' => 'Thiết bị đang khởi động',
     'KET NOI WIFI...' => 'Thiết bị đang kết nối Wi-Fi',
@@ -188,28 +196,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final status = widget.status;
     final online = status?.online == true;
     final known = status != null && online;
+    final foodKnown = known && status.foodLevelPercent != null;
+    final bowlKnown = known && status.bowlWeightG != null;
+    final maxPortion = status?.maxPortionG ?? 100;
+    final selectedPortion = _portion.clamp(
+      maxPortion < 10 ? maxPortion : 10,
+      maxPortion,
+    );
     final percent = (status?.foodLevelPercent ?? 0).clamp(0, 100);
     final low = percent <= 20;
     final food = _metric(
       label: 'Hạt trong hộp',
-      value: known ? '$percent%' : '—',
+      value: foodKnown ? '$percent%' : '—',
       icon: Icons.inventory_2_outlined,
       highlighted: true,
-      caption: !known
+      caption: !foodKnown
           ? 'Chưa có dữ liệu mới'
           : low
           ? 'Cần thêm hạt'
           : percent <= 45
           ? 'Nên chuẩn bị thêm hạt'
           : 'Đủ hạt cho bé',
-      captionColor: known && low ? const Color(0xFFFFC4B8) : null,
-      progress: known ? percent / 100 : 0,
+      captionColor: foodKnown && low ? const Color(0xFFFFC4B8) : null,
+      progress: foodKnown ? percent / 100 : 0,
     );
     final bowl = _metric(
       label: 'Trong bát',
-      value: known ? '${status.bowlWeightG.toStringAsFixed(1)} g' : '—',
+      value: bowlKnown ? '${status.bowlWeightG!.toStringAsFixed(1)} g' : '—',
       icon: Icons.rice_bowl_rounded,
-      caption: known ? 'Khối lượng hiện tại' : 'Chưa có dữ liệu mới',
+      caption: bowlKnown ? 'Khối lượng hiện tại' : 'Chưa có dữ liệu mới',
     );
     return PageContent(
       child: RefreshIndicator(
@@ -327,7 +342,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   const SizedBox(height: 16),
                   PortionSelector(
-                    value: _portion,
+                    value: selectedPortion,
+                    max: maxPortion,
                     onChanged: _submitting
                         ? null
                         : (v) => setState(() => _portion = v),
@@ -336,9 +352,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
+                      key: const ValueKey('feed-now'),
                       onPressed: !online || _submitting || widget.isLoading
                           ? null
-                          : _feed,
+                          : () {
+                              _portion = selectedPortion;
+                              _feed();
+                            },
                       icon: _submitting
                           ? const SizedBox(
                               width: 18,
@@ -347,11 +367,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             )
                           : const Icon(Icons.restaurant_rounded),
                       label: Text(
-                        _submitting ? 'Đang gửi…' : 'Cho ăn · $_portion g',
+                        _submitting
+                            ? 'Đang gửi…'
+                            : 'Cho ăn · $selectedPortion g',
                       ),
                     ),
                   ),
                   const SizedBox(height: 10),
+                  TextButton.icon(
+                    onPressed: !online || _submitting || widget.isLoading
+                        ? null
+                        : () => _feed(retry: true),
+                    icon: const Icon(Icons.replay_rounded, size: 18),
+                    label: const Text('Gửi lại cùng mã'),
+                  ),
+                  if (status?.sensorMode == 'DEMO_AUTO')
+                    const Text(
+                      'Số liệu demo mô phỏng, chưa xác nhận lượng cấp thực tế.',
+                    ),
                   Text(
                     online
                         ? 'Tự động bảo vệ bé khỏi các bữa ăn quá gần nhau.'

@@ -27,9 +27,9 @@ Write concise Vietnamese with diacritics. Prioritize what a pet owner needs to k
 - Wrap badges, day selectors, and portion presets on narrow widths. Use flexible columns for long text. Account for safe areas and keyboard insets in the schedule sheet.
 - Disable repeated submissions while requests are pending. Show progress and restore controls after success or failure. Do not automatically retry feeding or destructive requests.
 - Keep loading, unavailable, error/retry, and genuinely empty states distinct. Missing telemetry must display an unknown value, not a misleading zero or empty-food warning. Do not claim the device is healthy merely because no alerts were returned.
-- Gate remote feeding on current online status. Preserve duplicate-feed protection. Only offer a one-request override after an explicit duplicate warning; never leave override enabled for subsequent meals.
+- Gate remote feeding on current online status. Preserve the mandatory cooldown and all safety checks (36 cases C03/C05); do not offer an override. Explicit retries resend the saved command ID and original payload.
 - Confirm deletion of schedules and feeding history. Check API results before removing rows locally. Show understandable failures without raw exception dumps.
-- Validate server URLs and test a candidate before changing the shared API address. Settings are currently in-memory; do not claim they persist across app restarts.
+- Validate server URLs and test a candidate before changing the shared API address. Persist the validated address and pending feed payload with SharedPreferences; a failed candidate must leave the saved address intact.
 - Preserve backend contracts, portion limits, timestamps, and existing capabilities unless the user requests a behavior change. Check actual device status strings in firmware/backend before translating them into labels; retain a readable fallback for unknown statuses.
 - When asked for visual optimization without functional changes, confine edits to layout, typography, spacing, colors and presentation. Preserve action handlers, validation, request payloads, refresh logic, dialogs and control ranges; compare them with the pre-edit version and run existing regression tests.
 - Guard UI updates after asynchronous work with `mounted`; dispose controllers. Bound API waits so a loading button cannot stay stuck indefinitely.

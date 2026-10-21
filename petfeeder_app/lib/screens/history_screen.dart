@@ -16,6 +16,59 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _loading = true;
   bool _failed = false;
   bool _clearing = false;
+  final _retrying = <String>{};
+
+  Future<void> _complete(FeedingRecord record) async {
+    if (_retrying.contains(record.id)) return;
+    final remaining = record.targetPortionG - record.actualWeightG!;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cấp phần còn thiếu?'),
+        content: Text(
+          'Chỉ yêu cầu thêm ${remaining.toStringAsFixed(1)} g. Khoảng chờ và các giới hạn an toàn vẫn được áp dụng.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Hủy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Gửi yêu cầu'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _retrying.add(record.id));
+    try {
+      final result = await ApiService().feedNow(
+        portion: remaining,
+        override: false,
+        retryOf: record.id,
+      );
+      if (!mounted) return;
+      showFeedback(
+        context,
+        result['success'] == true
+            ? 'Đã nhận yêu cầu cấp phần còn thiếu; chờ thiết bị xác nhận.'
+            : 'Chưa thể cấp thêm. Kiểm tra khoảng chờ, giới hạn và trạng thái thiết bị.',
+        error: result['success'] != true,
+      );
+      await _load();
+    } catch (_) {
+      if (mounted) {
+        showFeedback(
+          context,
+          'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã.',
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _retrying.remove(record.id));
+    }
+  }
 
   @override
   void initState() {
@@ -44,7 +97,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Xóa nhật ký?'),
         content: const Text(
-          'Toàn bộ lịch sử cho ăn sẽ bị xóa. Bạn không thể khôi phục thao tác này.',
+          'Ẩn các bữa ăn khỏi nhật ký. Dữ liệu chống lặp và hạn mức ngày vẫn được giữ.',
         ),
         actions: [
           TextButton(
@@ -94,6 +147,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
     'EMPTY' || 'FOOD_EMPTY' => ('Hết hạt', AppTheme.accentCoral),
     'BLOCKED' || 'BLOCKED_DUPLICATE' => ('Đã chặn', AppTheme.accentAmber),
     'SENSOR_ERROR' => ('Lỗi cảm biến', AppTheme.accentCoral),
+    'QUEUED' => ('Chờ thiết bị nhận', AppTheme.accentAmber),
+    'ACCEPTED' => ('Thiết bị đã nhận', AppTheme.accentAmber),
+    'DISPENSING' => ('Đang cấp', AppTheme.accentAmber),
+    'PARTIAL' => ('Cấp thiếu', AppTheme.accentAmber),
+    'TIMEOUT' => ('Hết thời gian cấp', AppTheme.accentCoral),
+    'OVER_PORTION' => ('Vượt khẩu phần', AppTheme.accentCoral),
+    'INTERRUPTED' => ('Bị gián đoạn', AppTheme.accentCoral),
+    'REJECTED' => ('Đã từ chối', AppTheme.accentAmber),
+    'COMMAND_EXPIRED' => ('Lệnh hết hạn', AppTheme.accentAmber),
+    'DELIVERY_UNKNOWN' => ('Chưa rõ kết quả', AppTheme.accentAmber),
     _ => (value, AppTheme.textMuted),
   };
 
@@ -146,7 +209,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${r.actualWeightG.toStringAsFixed(1)} g',
+                      r.actualWeightG == null
+                          ? 'Chưa xác định'
+                          : '${r.actualWeightG!.toStringAsFixed(1)} g',
                       style: const TextStyle(
                         fontSize: 26,
                         height: 1.1,
@@ -180,6 +245,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             ),
           ],
+          if (['PARTIAL', 'JAM_ERROR', 'TIMEOUT'].contains(r.status) &&
+              r.actualWeightG != null &&
+              r.targetPortionG - r.actualWeightG! >= 1)
+            TextButton.icon(
+              onPressed: _retrying.contains(r.id) ? null : () => _complete(r),
+              icon: const Icon(Icons.restaurant_rounded),
+              label: const Text('Cấp phần còn thiếu'),
+            ),
         ],
       ),
     );

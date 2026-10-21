@@ -3,6 +3,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
+import 'safety_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback onRefresh;
@@ -61,7 +62,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final status = await ApiService().getDeviceStatus(serverUrl: candidate);
       if (!mounted) return;
-      ApiService().setBaseUrl(candidate);
+      await ApiService().setBaseUrl(candidate);
+      if (!mounted) return;
       setState(() {
         _connectionOk = true;
         _connectionMessage = status.online
@@ -288,6 +290,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 28),
+          SafetySettings(
+            key: ValueKey(ApiService().baseUrl),
+            onSaved: widget.onRefresh,
           ),
           const SizedBox(height: 28),
           Wrap(

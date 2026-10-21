@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:petfeeder_app/main.dart';
 import 'package:petfeeder_app/services/api_service.dart';
 
@@ -18,6 +19,7 @@ class FakeBackend {
   bool duplicate = false;
   bool failDelete = false;
   bool failCandidate = false;
+  bool partial = false;
   Completer<void>? pendingFeed;
   final requests = <http.Request>[];
   final schedule = <String, dynamic>{
@@ -30,7 +32,11 @@ class FakeBackend {
   };
 
   http.Response response(dynamic data, {int code = 200}) => http.Response(
-    jsonEncode({'data': data, 'message': 'Đã nhận lệnh'}),
+    jsonEncode({
+      'success': code < 400,
+      'data': data,
+      'message': 'Đã nhận yêu cầu; chờ thiết bị xác nhận.',
+    }),
     code,
     headers: {'content-type': 'application/json; charset=utf-8'},
   );
@@ -51,6 +57,35 @@ class FakeBackend {
         'last_feed_portion_g': 35,
       });
     }
+    if (path == '/api/id') {
+      return http.Response(
+        jsonEncode({
+          'command_id': 'test-${requests.length}',
+          'now': 1792500000,
+          'ttl_s': 60,
+        }),
+        200,
+      );
+    }
+    if (path == '/api/history') {
+      return http.Response(jsonEncode({'commands': []}), 200);
+    }
+    if (path == '/api/device/config') {
+      return response({
+        'food_confirmed': false,
+        'food_label': '',
+        'require_pet': false,
+        'max_portion_g': 100,
+        'daily_limit_g': 200,
+        'min_interval_s': 180,
+        'observation_s': 60,
+        'food_stale_s': 3600,
+        'feed_timeout_s': 30,
+        'max_daily_feeds': 6,
+        'bowl_capacity_g': 150,
+        'max_feed_pulses': 15,
+      });
+    }
     if (req.method == 'DELETE') {
       return response(null, code: failDelete ? 500 : 200);
     }
@@ -60,7 +95,7 @@ class FakeBackend {
         return http.Response(
           jsonEncode({
             'code': 'BLOCKED_DUPLICATE',
-            'message': 'Bé vừa ăn. Bạn có muốn cho ăn thêm?',
+            'message': 'Bé vừa ăn. Vui lòng đợi hết khoảng chờ bảo vệ.',
             'remaining_sec': 120,
           }),
           409,
@@ -89,8 +124,8 @@ class FakeBackend {
           'timestamp': '2026-10-21T00:00:00Z',
           'trigger_source': 'schedule',
           'target_portion_g': 35,
-          'actual_weight_g': 34.8,
-          'status': 'SUCCESS',
+          'actual_weight_g': partial ? 8.0 : 34.8,
+          'status': partial ? 'JAM_ERROR' : 'SUCCESS',
           'message': 'Bữa sáng đã được cấp đúng lịch cho bé.',
         },
       ]);
@@ -121,7 +156,7 @@ Future<void> start(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  ApiService().setBaseUrl('http://localhost:3000');
+  await ApiService().setBaseUrl('http://localhost:3000');
   addTearDown(() => ApiService().setBaseUrl('http://localhost:3000'));
   await tester.pumpWidget(
     RepaintBoundary(
@@ -168,6 +203,7 @@ Future<void> capture(WidgetTester tester, String name) async {
 }
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   setUpAll(() async {
     // Use the SDK's real font metrics for layout checks, including the first viewport.
     final configFile = File('.dart_tool/package_config.json').absolute;
@@ -238,9 +274,7 @@ void main() {
     return http.runWithClient(() async {
       await start(tester);
       expect(find.text('Cho ăn · 30 g').hitTestable(), findsOneWidget);
-      final button = tester.getRect(
-        find.widgetWithText(FilledButton, 'Cho ăn · 30 g'),
-      );
+      final button = tester.getRect(find.byKey(const ValueKey('feed-now')));
       expect(
         button.bottom,
         lessThanOrEqualTo(tester.getTopLeft(find.byType(NavigationBar)).dy),
@@ -289,7 +323,7 @@ void main() {
       expect(find.text('Cần thêm hạt'), findsNothing);
       await reveal(tester, find.text('Cho ăn · 30 g'));
       final button = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Cho ăn · 30 g'),
+        find.byKey(const ValueKey('feed-now')),
       );
       expect(button.onPressed, isNull);
       expect(api.requests.where((r) => r.method == 'POST'), isEmpty);
@@ -298,42 +332,104 @@ void main() {
   });
 
   testWidgets(
-    'duplicate warning grants only one override and blocks double taps',
+    'safety limits expand and save without overflow on a narrow screen with large text',
     (tester) {
-      final api = FakeBackend()..duplicate = true;
+      final api = FakeBackend();
       return http.runWithClient(() async {
-        await start(tester);
-        final feed = find.text('Cho ăn · 30 g');
-        await reveal(tester, feed);
-        api.pendingFeed = Completer<void>();
-        await tester.tap(feed);
-        await tester.pump();
-        final pending = tester.widget<FilledButton>(
-          find.widgetWithText(FilledButton, 'Đang gửi…'),
-        );
-        expect(pending.onPressed, isNull);
-        expect(
-          api.requests.where((r) => r.url.path == '/api/feeding/feed').length,
-          1,
-        );
-        api.pendingFeed!.complete();
+        await start(tester, size: const Size(320, 740), scale: 2);
+        await navigate(tester, 'Cài đặt');
+        await reveal(tester, find.text('Giới hạn và thời gian kiểm thử'));
+        await tester.tap(find.text('Giới hạn và thời gian kiểm thử'));
         await tester.pumpAndSettle();
-        expect(find.text('Bữa ăn vừa được cấp'), findsOneWidget);
-        await tester.tap(find.text('Vẫn cho ăn'));
+        await reveal(tester, find.text('Lưu xác nhận và giới hạn'));
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.text('Lưu xác nhận và giới hạn'));
         await tester.pumpAndSettle();
-        await tester.tap(feed);
-        await tester.pumpAndSettle();
-        final sent = api.requests
-            .where((r) => r.url.path == '/api/feeding/feed')
-            .map((r) => jsonDecode(r.body)['override'])
+        final saved = api.requests
+            .where(
+              (r) => r.method == 'PUT' && r.url.path == '/api/device/config',
+            )
             .toList();
-        expect(sent, [false, true, false]);
-        await tester.tap(find.text('Đóng'));
-        await tester.pumpAndSettle();
+        expect(saved, hasLength(1));
+        final patch = jsonDecode(saved.single.body);
+        expect(patch['min_interval_s'], 180);
+        expect(patch['max_daily_feeds'], 6);
+        expect(patch['bowl_capacity_g'], 150);
+        expect(patch['max_feed_pulses'], 15);
+        expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       }, () => MockClient(api.handle));
     },
   );
+
+  testWidgets(
+    'partial recovery confirms and sends only the missing grams with the parent ID',
+    (tester) {
+      final api = FakeBackend()..partial = true;
+      return http.runWithClient(() async {
+        await start(tester);
+        await navigate(tester, 'Nhật ký');
+        await reveal(tester, find.text('Cấp phần còn thiếu'));
+        await tester.tap(find.text('Cấp phần còn thiếu'));
+        await tester.pumpAndSettle();
+        expect(
+          api.requests.where((r) => r.url.path == '/api/feeding/feed'),
+          isEmpty,
+        );
+        await tester.tap(find.text('Gửi yêu cầu'));
+        await tester.pumpAndSettle();
+        final sent = api.requests
+            .where((r) => r.url.path == '/api/feeding/feed')
+            .toList();
+        expect(sent, hasLength(1));
+        final command = jsonDecode(sent.single.body);
+        expect(command['portion'], 27);
+        expect(command['retry_of'], 'meal');
+        expect(command['override'], false);
+        expect(command['command_id'], isNotEmpty);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }, () => MockClient(api.handle));
+    },
+  );
+
+  testWidgets('duplicate warning enforces cooldown and blocks double taps', (
+    tester,
+  ) {
+    final api = FakeBackend()..duplicate = true;
+    return http.runWithClient(() async {
+      await start(tester);
+      final feed = find.text('Cho ăn · 30 g');
+      await reveal(tester, feed);
+      api.pendingFeed = Completer<void>();
+      await tester.tap(feed);
+      await tester.pump();
+      final pending = tester.widget<FilledButton>(
+        find.byKey(const ValueKey('feed-now')),
+      );
+      expect(pending.onPressed, isNull);
+      expect(
+        api.requests.where((r) => r.url.path == '/api/feeding/feed').length,
+        1,
+      );
+      api.pendingFeed!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Bữa ăn vừa được cấp'), findsOneWidget);
+      expect(find.text('Vẫn cho ăn'), findsNothing);
+      expect(
+        find.text('Vui lòng đợi hết khoảng chờ bảo vệ rồi mới cho ăn tiếp.'),
+        findsOneWidget,
+      );
+      final sent = api.requests
+          .where((r) => r.url.path == '/api/feeding/feed')
+          .map((r) => jsonDecode(r.body)['override'])
+          .toList();
+      expect(sent, [false]);
+      await tester.tap(find.text('Đóng'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => MockClient(api.handle));
+  });
 
   testWidgets(
     'schedule editor handles keyboard and submits selected days once',

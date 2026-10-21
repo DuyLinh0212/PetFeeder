@@ -1,0 +1,10 @@
+{
+  "folders": [
+    {"name": "Mạch chung MAIN · ESP32 + Wokwi", "path": "PetFeeder"},
+    {"name": "Backend chung", "path": "petfeeder_backend"},
+    {"name": "App Flutter chung", "path": "petfeeder_app"}
+  ],
+  "settings": {
+    "files.exclude": {"**/node_modules": true, "**/.pio": true, "**/.dart_tool": true, "**/build": true}
+  }
+}
