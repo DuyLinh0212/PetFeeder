@@ -1,0 +1,6 @@
+{
+  "name": "petfeeder-long", "version": "1.0.0", "private": true, "type": "module",
+  "engines": {"node": ">=22.13"},
+  "scripts": {"start": "node src/server.js", "demo": "node src/server.js --demo", "broker": "node src/broker.js", "test": "node --test test/*.test.js"},
+  "dependencies": {"mqtt": "5.10.4", "aedes": "0.51.3"}
+}

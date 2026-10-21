@@ -1,0 +1,20 @@
+{
+  "version": 1, "author": "Le Hoang Bao Long", "editor": "wokwi",
+  "parts": [
+    {"type":"board-esp32-devkit-c-v4","id":"esp","top":0,"left":0,"attrs":{}},
+    {"type":"wokwi-hx711","id":"scale","top":-10,"left":230,"attrs":{"type":"5kg"}},
+    {"type":"wokwi-servo","id":"gate","top":210,"left":220,"attrs":{}},
+    {"type":"wokwi-hc-sr04","id":"level","top":-140,"left":220,"attrs":{"distance":"10"}},
+    {"type":"wokwi-pushbutton","id":"button","top":210,"left":-100,"attrs":{"color":"green","bounce":"1"}},
+    {"type":"wokwi-text","id":"note","top":-200,"left":-100,"attrs":{"text":"PetFeeder - Long\nHX711: tang load thu cong khi servo mo\n0.020 kg = 20 g. Khong tu tare khi boot."}}
+  ],
+  "connections": [
+    ["esp:TX","$serialMonitor:RX","",[]], ["esp:RX","$serialMonitor:TX","",[]],
+    ["scale:VCC","esp:5V","red",[]], ["scale:GND","esp:GND.1","black",[]],
+    ["scale:DT","esp:16","green",[]], ["scale:SCK","esp:4","blue",[]],
+    ["gate:V+","esp:5V","red",[]], ["gate:GND","esp:GND.2","black",[]], ["gate:PWM","esp:18","orange",[]],
+    ["level:VCC","esp:5V","red",[]], ["level:GND","esp:GND.1","black",[]],
+    ["level:TRIG","esp:23","green",[]], ["level:ECHO","esp:19","blue",[]],
+    ["button:1.l","esp:27","green",[]], ["button:2.l","esp:GND.2","black",[]]
+  ]
+}
