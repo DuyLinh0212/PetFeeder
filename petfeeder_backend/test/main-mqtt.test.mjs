@@ -25,12 +25,11 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
   const publish=(topic,body,retain=false)=>new Promise((resolve,reject)=>device.publish(`${prefix}/${topic}`,JSON.stringify(body),{qos:1,retain},e=>e?reject(e):resolve()));
   try{
     integration=createBackend({dataDir,brokerUrl:url,prefix});
-    integration.service.configure({food_confirmed:true,food_label:'Main owner confirmation'});
     await waitFor(()=>integration.connected());
     const now=Math.floor(Date.now()/1000);
     await publish('telemetry',{occurred_at:now,busy:false,weight_g:0,device_id:'petfeeder_01',sensor_mode:'HX711_MANUAL'});
     await waitFor(()=>integration.service.state().connection==='ONLINE');
-    const c={command_id:'mqtt-main-1',source:'APP',target_portion_g:20,override:false,created_at:now,expires_at:now+60};
+    const c={command_id:'mqtt-main-1',source:'APP',target_portion_g:20,created_at:now,expires_at:now+60};
     integration.service.feed(c);await waitFor(()=>received.length>=1);
     assert.deepEqual(received[0],c);
     const e={event_id:'main-event-1',command_id:c.command_id,status:'SUCCESS',seq:1,occurred_at:now,actual_weight_g:20,target_portion_g:20,source:'APP'};

@@ -204,7 +204,7 @@ void main() {
     expect(result['success'], false);
     expect(result['code'], 'WEIGHT_UNSTABLE');
     expect(result['data']['actual_weight_g'], isNull);
-    expect(result['message'], contains('dừng vì lỗi cảm biến'));
+    expect(result['message'], contains('cân lỗi hoặc bát không còn trên cân'));
   });
 
   test(
@@ -278,7 +278,7 @@ void main() {
           ),
         ),
       );
-      expect(find.text('—'), findsNWidgets(2));
+      expect(find.text('—'), findsOneWidget);
       expect(find.text('Cần thêm hạt'), findsNothing);
       expect(find.text('0.0 g'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -304,7 +304,7 @@ void main() {
       final button = find.byKey(const ValueKey('feed-now'));
       expect(button, findsOneWidget);
       expect(tester.widget<FilledButton>(button).onPressed, isNull);
-      expect(find.text('—'), findsNWidgets(2));
+      expect(find.text('—'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

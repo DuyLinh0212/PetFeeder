@@ -7,7 +7,7 @@ export class DeviceSimulator {
     this.s=store.get('device')||{config:{...defaults},schedules:[],seq:0,queue:[],active:null,
       last_end:0,scan:0,locked:false,food_since:null,stale_alert:false,observations:[]};
     this.online=true;this.bootId=randomUUID();this.identity=null;this.sensors={weight_g:0,calibrated:true,time_valid:true,auto_feed:true,
-      distance_cm:5,stable:true,bowl_present:true,jammed:false};this.lastTick=this.clock();
+      distance_cm:5,stable:true,jammed:false};this.lastTick=this.clock();
     if(this.s.active){const a=this.s.active;this.s.active=null;this.s.locked=true;
       this.result(a,'INTERRUPTED',null,'RECONCILIATION_REQUIRED');}
     this.save();
@@ -26,9 +26,11 @@ export class DeviceSimulator {
   sync(payload){const cfg=config(payload.config);schedules(payload.schedules,cfg);
     if(this.s.active){if(cfg.lockdown){this.s.config.lockdown=true;this.save();}return;}
     this.s.config=cfg;this.s.schedules=payload.schedules;this.s.config_version=payload.version;this.save();}
-  heartbeat(){if(this.online)this.sendHeartbeat({occurred_at:this.clock(),busy:!!this.s.active,
-    weight_g:this.sensors.weight_g,time_valid:this.sensors.time_valid,locked:this.s.locked,mode:'DEMO',boot_id:this.bootId,
+  heartbeat(){if(this.online){const raw=this.sensors.weight_g,weightValid=Number.isFinite(raw)&&raw>=-2&&raw<=5000;
+    this.sendHeartbeat({occurred_at:this.clock(),busy:!!this.s.active,
+    weight_g:weightValid?Math.max(0,raw):null,time_valid:this.sensors.time_valid,locked:this.s.locked,mode:'DEMO',boot_id:this.bootId,
     food_since:this.s.food_since,outbox:this.s.queue.length,config_version:this.s.config_version});}
+  }
   result(c,status,actual,error=null){const e=this.event(status,{command_id:c.command_id,
     source:c.source,target_portion_g:c.target_portion_g,actual_weight_g:actual,error_code:error});
     this.store.put('device_commands',c.command_id,{...c,...e});return e;}
@@ -47,15 +49,13 @@ export class DeviceSimulator {
     else if(this.s.active)reason='BUSY';
     else if(cfg.lockdown)reason='SAFETY_LOCKOUT';
     else if(cfg.require_pet&&!this.petAllowed(c))reason='UNKNOWN_PET';
-    else if(!cfg.food_confirmed)reason='UNVERIFIED';
-    else if(!this.sensors.bowl_present)reason='BOWL_MISSING';
-    else if(!this.sensors.calibrated || this.sensors.weight_g===null || !this.sensors.stable)reason='SENSOR_ERROR';
+    else if(Number.isFinite(this.sensors.weight_g)&&this.sensors.weight_g<=-10)reason='BOWL_MISSING';
+    else if(!this.sensors.calibrated || !Number.isFinite(this.sensors.weight_g) || this.sensors.weight_g< -2 || !this.sensors.stable)reason='SENSOR_ERROR';
     else if(now-this.s.last_end<cfg.min_interval_s)reason='COOLDOWN';
     else if(total.reserved_g+c.target_portion_g>cfg.daily_limit_g)reason='DAILY_LIMIT';
     else if((total.feeds||0)>=cfg.max_daily_feeds)reason='DAILY_FEED_LIMIT';
     else if(this.sensors.weight_g+c.target_portion_g>cfg.bowl_capacity_g)reason='BOWL_FULL';
     else if(!Number.isFinite(this.sensors.distance_cm))reason='SENSOR_ERROR';
-    else if(this.sensors.distance_cm>=cfg.empty_threshold_cm)reason='FOOD_EMPTY';
     if(!reason&&c.retry_of){
       const parent=this.store.get('device_commands',c.retry_of);
       if(!parent||!['PARTIAL','JAM_ERROR','TIMEOUT'].includes(parent.status)||typeof parent.actual_weight_g!=='number'||
@@ -100,7 +100,7 @@ export class DeviceSimulator {
         this.store.put('device_schedule_runs',key,{at:now}); // before receive, survives resync/reboot
         if(now-due>=60){this.event('MISSED_SCHEDULE',{schedule_id:sch.schedule_id,date});continue;}
         this.receive({command_id:'sch:'+key,source:'SCHEDULE',target_portion_g:sch.target_portion_g,
-          created_at:now,expires_at:now+cfg.command_ttl_s,override:false});
+          created_at:now,expires_at:now+cfg.command_ttl_s});
       }
     }
     this.s.scan=now;this.save();
@@ -110,8 +110,8 @@ export class DeviceSimulator {
     const a=this.s.active,cfg=this.s.config;
     if(a){
       if(cfg.lockdown)this.finish('INTERRUPTED',null,'SAFETY_LOCKOUT');
-      else if(!this.sensors.bowl_present)this.finish('SENSOR_ERROR',null,'BOWL_MISSING');
-      else if(this.sensors.weight_g===null)this.finish('SENSOR_ERROR',null,'MEASUREMENT_LOST');
+      else if(!Number.isFinite(this.sensors.weight_g)||this.sensors.weight_g< -2)
+        this.finish('SENSOR_ERROR',null,this.sensors.weight_g<=-10?'BOWL_MISSING':'MEASUREMENT_LOST');
       else if(!this.sensors.stable)this.finish('SENSOR_ERROR',null,'WEIGHT_UNSTABLE');
       else if(this.sensors.weight_g<a.previous_weight-2)this.finish('INTERRUPTED',null,'INTERRUPTED_PET_FEEDING');
       else{
@@ -121,7 +121,6 @@ export class DeviceSimulator {
         if(actual>a.target_portion_g+cfg.tolerance_g)this.finish('OVER_PORTION',actual,'OVER_PORTION');
         else if(actual>0&&actual>=a.target_portion_g-cfg.tolerance_g)this.finish('SUCCESS',actual);
         else if(!Number.isFinite(this.sensors.distance_cm))this.finish('SENSOR_ERROR',actual,'ULTRASONIC_TIMEOUT');
-        else if(this.sensors.distance_cm>=cfg.empty_threshold_cm)this.finish(actual>0?'PARTIAL':'FOOD_EMPTY',actual,'FOOD_EMPTY');
         else if(this.sensors.jammed&&a.pulses>=cfg.anti_jam_max_retries)this.finish('JAM_ERROR',actual,'JAM_ERROR');
         else if(a.pulses>=cfg.max_feed_pulses)this.finish(actual>0?'PARTIAL':'TIMEOUT',actual,'MAX_PULSES_REACHED');
         else if(now-a.started>=cfg.feed_timeout_s)this.finish(actual>0?'PARTIAL':'TIMEOUT',actual,'FEED_TIMEOUT');

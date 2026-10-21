@@ -110,6 +110,21 @@ jobs:
         working-directory: petfeeder_backend
         run: npm test
 
+  yolo-service:
+    name: YOLO service syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Validate YOLO service syntax
+        run: python -m py_compile YOLO_PetFeeder/yolo_api.py
+
   firmware:
     name: ESP32 firmware builds
     runs-on: ubuntu-24.04
@@ -131,7 +146,7 @@ jobs:
 
   release:
     name: Publish Android APK release
-    needs: [detect-mobile-changes, flutter, backend, firmware]
+    needs: [detect-mobile-changes, flutter, backend, yolo-service, firmware]
     if: >-
       github.ref == 'refs/heads/main' &&
       github.event_name != 'pull_request' &&

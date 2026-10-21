@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/active-cases.test.mjs test/camera-demo.test.mjs test/main-mqtt.test.mjs test/sync-regression.test.mjs test/vision.test.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

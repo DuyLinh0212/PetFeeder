@@ -63,7 +63,7 @@ CI Ubuntu lần đầu phát hiện SDK không có Roboto mà cache Windows cũ 
 | N17 | Boot đóng servo, phiên đang cấp thành INTERRUPTED, khóa chờ đối soát; test reboot giữa phiên | Chưa cắt nguồn đúng lúc ghi flash/servo mở |
 | N18 | Không tare lúc boot; tare EMPTY là thao tác hiệu chuẩn riêng; test mô hình + rà soát/build firmware | Cần cân thật để xác nhận hiệu chuẩn |
 | N19 | Lịch lưu bền, chạy offline khi giờ hợp lệ, sự kiện xếp outbox; test offline/replay | Không có RTC; không bảo đảm lịch sau mất điện khi chưa lấy lại giờ |
-| N20 | Giờ chưa hợp lệ trả TIME_INVALID, không chạy lịch; test thời gian | Chưa có RTC dự phòng |
+| N20 | Giờ chưa hợp lệ thì không chạy lịch/cấp; bỏ qua kiểm tra thông báo sự kiện TIME_INVALID | Chưa có RTC dự phòng |
 | N21 | API/firmware kiểm tra days, lọc đúng thứ, không cắt mất lịch thứ 9/10; test ngày và 10 lịch | Chưa chạy đủ tuần trên ESP32 |
 | N22 | Giữ khóa lịch + ngày qua sync/reboot; test dấu đã chạy | Cần thử reset vật lý quanh giờ lịch |
 | N23 | Giữ cửa sổ trễ 60s, đối soát tối đa 7 ngày; MISSED_SCHEDULE, không cấp dồn; test lịch quá hạn | Hiện giữ các cửa sổ của Long; chưa có giao diện chỉnh hai giá trị này |

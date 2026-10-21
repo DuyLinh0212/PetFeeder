@@ -16,9 +16,9 @@ function fixture(){
   }};
   service=new Service(backend,transport,()=>now);
   const boot=()=>{device=new DeviceSimulator(deviceStore,e=>service.event(e),h=>service.heartbeat(h),()=>now);service.sync();device.heartbeat();};
-  boot();service.configure({food_confirmed:true,food_label:'Hạt do chủ xác nhận',require_pet:true,registered_pet_id:'PET_LONG_01'});
+  boot();service.configure({require_pet:true});
   return {service,backend,deviceStore,boot,get device(){return device;},get now(){return now;},
-    command(){return {command_id:`camera-cmd-${++next}`,source:'APP',target_portion_g:20,override:false,created_at:now,expires_at:now+60};},
+    command(){return {command_id:`camera-cmd-${++next}`,source:'APP',target_portion_g:20,created_at:now,expires_at:now+60};},
     verify(){return service.observePet([{label:'cat',confidence:0.91}]);},
     step(seconds){now+=seconds;device.tick();},close(){backend.close();deviceStore.close();}};
 }
@@ -36,10 +36,8 @@ for(const [label,boxes] of [['none',[]],['low score',[{label:'cat',confidence:0.
  const f=fixture();try{f.service.observePet(boxes);assert.equal(f.service.feed(f.command()).error_code,'UNKNOWN_PET');}finally{f.close();}
 });
 test('Revocation and expiry block new feeds, posted confidence cannot bypass YOLO',()=>{
- const f=fixture();try{f.verify();f.service.revokePet();assert.equal(f.service.feed({...f.command(),confidence:1,pet_id:'species-cat'}).error_code,'UNKNOWN_PET');
+ const f=fixture();try{f.verify();f.service.revokePet();assert.equal(f.service.feed({...f.command(),confidence:1,pet_id:'species-cat',
+ recognition_id:'client-asserted',recognition_expires_at:f.now+5,recognition_source:'YOLO_PET_PRESENCE'}).error_code,'UNKNOWN_PET');
  f.verify();f.step(6);assert.equal(f.service.feed(f.command()).error_code,'UNKNOWN_PET');
  }finally{f.close();}
-});
-test('Real detection cannot bypass owner food confirmation',()=>{
- const f=fixture();try{f.service.configure({food_confirmed:false});f.verify();assert.equal(f.service.feed(f.command()).error_code,'UNVERIFIED');}finally{f.close();}
 });

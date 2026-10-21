@@ -48,10 +48,10 @@ test('A newly detected clock error is corrected immediately, repeated drift is t
 test('Saving changed config bypasses heartbeat retry throttling',t=>{
   const f=fixture(t);f.heartbeat();
   const initialVersion=f.sent[0].body.version;
-  f.service.configure({food_confirmed:true,food_label:'Hạt'});
+  f.service.configure({max_portion_g:90});
   assert.equal(f.sent.length,2);
   assert.notEqual(f.sent[1].body.version,initialVersion);
-  assert.equal(f.sent[1].body.config.food_label,'Hạt');
+  assert.equal(f.sent[1].body.config.max_portion_g,90);
   f.advance(5);f.heartbeat({config_version:initialVersion});
   assert.equal(f.sent.length,3);
   f.advance(5);f.heartbeat({config_version:initialVersion});
@@ -61,12 +61,12 @@ test('Saving changed config bypasses heartbeat retry throttling',t=>{
 test('Pending config is retried immediately when dispensing finishes',t=>{
   const f=fixture(t);f.heartbeat({busy:true});
   const initialVersion=f.service.syncPayload().version;
-  f.service.configure({food_stale_s:30});
+  f.service.configure({feed_timeout_s:40});
   f.advance(1);f.heartbeat({busy:true,config_version:initialVersion});
   assert.equal(f.sent.length,3);
   f.advance(1);f.heartbeat({busy:false,config_version:initialVersion});
   assert.equal(f.sent.length,4);
-  assert.equal(f.sent[3].body.config.food_stale_s,30);
+  assert.equal(f.sent[3].body.config.feed_timeout_s,40);
 });
 
 test('Failed publish does not postpone the next sync attempt',t=>{
