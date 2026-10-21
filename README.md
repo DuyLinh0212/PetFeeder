@@ -25,8 +25,8 @@ Cần Node.js >=22.13, Flutter SDK, PlatformIO và Wokwi Simulator có license h
 2. Trong petfeeder_app: flutter pub get, rồi flutter run -d chrome --dart-define=API_URL=http://127.0.0.1:3000.
 3. Trong PetFeeder: pio run. Trên máy Long có thể chạy CHAY.ps1 -Mode build từ thư mục gốc.
 4. Mở PetFeeder/diagram.json, F1 → Wokwi: Start Simulator.
-5. Nếu Serial báo STORAGE_NOT_INITIALIZED, gửi INIT_NEW_DEVICE để tạo bộ nhớ thiết bị mới. Lệnh này format bộ nhớ; không dùng trong bài giữ dữ liệu qua reset.
-6. Gửi status, chờ time_valid=1 và MQTT kết nối. Trên app, vào Cài đặt, nhập tên thức ăn, xác nhận đã kiểm tra và lưu. Chờ CONFIG_APPLIED hoặc xem config_version trong /api/state.
+5. Wokwi tự khởi tạo khi toàn bộ phân vùng LittleFS còn trắng; không cần gõ INIT_NEW_DEVICE cho mô phỏng mới. Nếu đã có dữ liệu thì giữ nguyên và chỉ mount lại. Bộ nhớ có dữ liệu nhưng lỗi đọc vẫn khóa cấp; firmware không tự format. Thiết bị thật mới chỉ được khởi tạo thủ công bằng INIT_NEW_DEVICE sau khi xác nhận không có dữ liệu cần giữ.
+6. Wi-Fi và MQTT tự kết nối khi chạy; chờ dòng MQTT_CONNECTED và OLED MQTT: ON. Có thể gõ status trong Wokwi Terminal để kiểm tra time_valid=1, wifi=1, mqtt=1; firmware hiện ký tự đang gõ và nhận Enter CR/LF. Trên app, vào Cài đặt, nhập tên thức ăn, xác nhận đã kiểm tra và lưu. Chờ CONFIG_APPLIED hoặc xem config_version trong /api/state.
 7. Cấp 20g từ app hoặc nhấn nút; xem OLED, Serial và Nhật ký. API nhận lệnh chưa phải kết quả SUCCESS.
 
 Broker và prefix giữ theo main: broker.emqx.io:1883, duylinh0212/petfeeder/v1. Có thể sao chép petfeeder_backend/.env.example thành .env và PetFeeder/include/secrets.example.h thành secrets.h để đặt broker riêng. Broker và prefix hai phía phải khớp; chỉ chạy một phiên mạch cùng device/topic.

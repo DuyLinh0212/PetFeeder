@@ -5,6 +5,10 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <esp_partition.h>
+#if WOKWI_SIM
+#include <esp_littlefs.h>
+#endif
 #include <HX711.h>
 #include <time.h>
 #include <Wire.h>
@@ -72,6 +76,20 @@ bool persist(){
   }
   return true;
 }
+#if WOKWI_SIM
+bool blankSimulationStorage(){
+  const esp_partition_t* partition=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,"spiffs");
+  if(!partition||partition->encrypted)return false;
+  uint8_t block[512];
+  for(size_t offset=0;offset<partition->size;offset+=sizeof(block)){
+    const size_t count=min(sizeof(block),partition->size-offset);
+    if(esp_partition_read(partition,offset,block,count)!=ESP_OK)return false;
+    for(size_t i=0;i<count;i++)if(block[i]!=0xff)return false;
+    yield();
+  }
+  return true;
+}
+#endif
 JsonObject cfg(){return state["config"].as<JsonObject>();}
 float cf(const char* key){return cfg()[key].as<float>();}
 void trackWeight(unsigned long ms){
@@ -307,7 +325,7 @@ void serialCommand(String line){
   if((line=="sim jam on"||line=="sim jam off")&&!busy){simJam=line=="sim jam on";return;}
   if(line=="sim empty"&&!busy&&simAuto){state["sim_bowl_g"]=0;persist();return;}
 #endif
-  if(line=="status"){heartbeat();Serial.printf("weight=%.1fg calibrated=%d time_valid=%d busy=%d\n",weightG,state["calibrated"].as<bool>(),validTime(),busy);}
+  if(line=="status"){heartbeat();Serial.printf("weight=%.1fg calibrated=%d time_valid=%d busy=%d wifi=%d mqtt=%d mqtt_state=%d\n",weightG,state["calibrated"].as<bool>(),validTime(),busy,WiFi.status()==WL_CONNECTED,mqtt.connected(),mqtt.state());}
   else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("CALIBRATED: empty bowl offset saved");}
   else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Now run tare EMPTY with empty bowl");}}
   else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
@@ -322,7 +340,14 @@ void setup(){
   pinMode(GREEN_PIN,OUTPUT);pinMode(RED_PIN,OUTPUT);pinMode(BUZZER_PIN,OUTPUT);
   Wire.begin(21,22);oledOK=display.begin(SSD1306_SWITCHCAPVCC,0x3c);
   pinMode(BUTTON_PIN,INPUT_PULLUP);pinMode(TRIG_PIN,OUTPUT);pinMode(ECHO_PIN,INPUT);scale.begin(DT_PIN,SCK_PIN);
-  // Do not format on a mount error: formatting could erase anti-repeat state after a transient failure.
+  // Only a fully erased Wokwi partition may be initialized automatically.
+  // Existing data and real hardware must never be formatted on a mount failure.
+#if WOKWI_SIM
+  if(blankSimulationStorage()){
+    Serial.println("WOKWI: initializing blank simulation storage");
+    storageOK=esp_littlefs_format("spiffs")==ESP_OK&&LittleFS.begin(false);
+  }else
+#endif
   storageOK=LittleFS.begin(false);
   if(!storageOK){Serial.println("STORAGE_NOT_INITIALIZED: send INIT_NEW_DEVICE to format ONLY a new empty device");}
   if(storageOK&&LittleFS.exists("/state.json")){
@@ -349,13 +374,16 @@ void setup(){
   #if WOKWI_SIM
   simAuto=storageOK&&state["sim_auto"].as<bool>();
 #endif
-  busy=false;WiFi.mode(WIFI_STA);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
+  busy=false;WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
   mqtt.setServer(MQTT_HOST,MQTT_PORT);mqtt.setCallback(callback);mqtt.setBufferSize(8192);mqtt.setSocketTimeout(1);mqtt.setKeepAlive(60);
-  Serial.println("PetFeeder MAIN + Long ready. Serial: sim manual | sim auto | sim jam on/off | sim empty. HX711 never tares on boot. Type status for readings.");
+  Serial.printf("WiFi: auto-connect Wokwi-GUEST; MQTT: auto-connect %s:%d\n",MQTT_HOST,MQTT_PORT);
+  Serial.println("PetFeeder ready. Serial: status | sim manual | sim auto | sim jam on/off | sim empty. HX711 never tares on boot.");
 }
 void loop(){
   while(Serial.available()){
-    char c=Serial.read();if(c=='\n'){
+    char c=Serial.read();if(c=='\n'||c=='\r'){
+      if(!serialLine.length())continue; // Accept CR, LF and CRLF without repeating a command.
+      Serial.println();serialLine.trim();
       if(serialLine=="INIT_NEW_DEVICE"&&!storageOK){
         if(LittleFS.format()&&LittleFS.begin(false)){storageOK=true;defaults();persist();
 #if WOKWI_SIM
@@ -363,7 +391,9 @@ void loop(){
 #endif
         Serial.println("INITIALIZED; new device only");}
       }else if(storageOK)serialCommand(serialLine);serialLine="";
-    }else if(c!='\r'&&serialLine.length()<4096)serialLine+=c;
+    }else if(c=='\b'||c==127){
+      if(serialLine.length()){serialLine.remove(serialLine.length()-1);Serial.print("\b \b");}
+    }else if(static_cast<uint8_t>(c)>=32&&serialLine.length()<4096){serialLine+=c;Serial.write(c);}
   }
   updatePanel();
   if(!storageOK){servo(false);delay(1);return;}
@@ -433,6 +463,7 @@ void loop(){
   if(WiFi.status()==WL_CONNECTED){
     if(!mqtt.connected()&&!busy&&ms-connectAt>=3000){connectAt=ms;
       if(mqtt.connect((String("esp-")+DEVICE_ID).c_str(),MQTT_USER,MQTT_PASS)){
+        Serial.printf("MQTT_CONNECTED: %s:%d\n",MQTT_HOST,MQTT_PORT);
         mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);heartbeat();
       }
     }

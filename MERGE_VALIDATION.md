@@ -77,4 +77,6 @@ CI Ubuntu lần đầu phát hiện SDK không có Roboto mà cache Windows cũ 
 
 Nhận diện thú, phát hiện vật nạp/chất độc, xác nhận bát hiện diện bằng cảm biến chuyên dụng, RTC sau mất điện và kiểm thử mất điện/flash/cơ khí chưa có bằng chứng phần cứng ở các nhánh. Bản tích hợp giữ luồng từ chối/an toàn, không tự khẳng định đã có các khả năng này. Hành vi suy đoán bát qua cân âm chỉ là dấu hiệu, không thay cảm biến hiện diện.
 
-Không tự format LittleFS hoặc nạp firmware khi kiểm chứng merge. `INIT_NEW_DEVICE` chỉ dành cho thiết bị mới; `reconcile CHECKED` chỉ dùng sau kiểm tra thật. Cập nhật backend/app/firmware cùng phiên bản vì hợp đồng lệnh thống nhất yêu cầu ID và thời hạn.
+Wokwi tự khởi tạo LittleFS chỉ khi đọc thành công toàn bộ phân vùng `spiffs` và tất cả byte đều là `0xFF`. Phân vùng có dữ liệu, đọc lỗi, mã hóa hoặc firmware phần cứng thật không được tự format. Serial nhận cả CR/LF/CRLF và hiện ký tự nhập để dùng được terminal Wokwi. Hai môi trường firmware đã build thành công; chưa kiểm chứng trực tiếp thay đổi này trong mô phỏng tương tác.
+
+Không tự nạp firmware lên thiết bị thật khi kiểm chứng merge. `INIT_NEW_DEVICE` chỉ dành cho thiết bị mới; `reconcile CHECKED` chỉ dùng sau kiểm tra thật. Cập nhật backend/app/firmware cùng phiên bản vì hợp đồng lệnh thống nhất yêu cầu ID và thời hạn.
