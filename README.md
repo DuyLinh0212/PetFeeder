@@ -2,9 +2,9 @@
 
 ## Camera YOLO chó/mèo
 
-Camera Flutter → REST `/api/vision/detect` → YOLO11n trên laptop (cổng 8002). Dùng lại dịch vụ/model trong dự án `YOLO_PetFeeder` đã có; bản cập nhật này không chứa lại model hoặc toàn bộ dự án YOLO. Backend mặc định gọi `http://127.0.0.1:8002`, có thể đổi bằng `YOLO_URL`.
+Camera Flutter → REST `/api/vision/detect` → YOLO11n trên laptop (cổng 8002). Đã kèm code AI và model tại `YOLO_PetFeeder/models/yolo11n.pt`. Backend mặc định gọi `http://127.0.0.1:8002`, có thể đổi bằng `YOLO_URL`.
 
-Chạy `python yolo_api.py` trong dự án YOLO đã có; tại PetFeeder chạy `./CHAY.ps1 -Mode backend` và `./CHAY.ps1 -Mode app` trong hai terminal riêng. Lần đầu cần Python và các thư viện trong `YOLO_PetFeeder/requirements.txt`. Trong app chọn **Cài đặt → Camera · YOLO chó/mèo → Mở camera thật**, cho phép camera rồi đưa chó/mèo hoặc ảnh chó/mèo vào khung hình. App hiển thị nhãn và độ tin cậy thực của model; ảnh chỉ gửi đến YOLO trên laptop.
+Tại thư mục PetFeeder, chạy ba terminal: `./CHAY.ps1 -Mode yolo`, `./CHAY.ps1 -Mode backend`, và `./CHAY.ps1 -Mode app`. Lần đầu cần Python và các thư viện trong `YOLO_PetFeeder/requirements.txt`. Trong app chọn **Cài đặt → Camera · YOLO chó/mèo → Mở camera thật**, cho phép camera rồi đưa chó/mèo hoặc ảnh chó/mèo vào khung hình. App hiển thị nhãn và độ tin cậy thực của model; ảnh chỉ gửi đến YOLO trên laptop.
 
 Model nhận diện loài, chưa xác minh danh tính từng con thú và chưa phân biệt ảnh chụp với thú thật. Kết quả AI tự động cho qua bước phát hiện thú sau 2 khung ảnh liên tiếp đạt từ 50%; mất thú, tắt camera hoặc kết quả quá 5 giây sẽ chặn lệnh mới. Đã bỏ các nút giả lập và vô hiệu endpoint xác minh thủ công. AI không tự phát lệnh cấp; chủ vẫn cần yêu cầu cấp hoặc dùng lịch. Các giới hạn thức ăn/khẩu phần/thời gian chờ trên backend và ESP32 được giữ nguyên.
 

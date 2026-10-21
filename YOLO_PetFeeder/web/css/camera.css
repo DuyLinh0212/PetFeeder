@@ -1,0 +1,30 @@
+.camera-app { max-width: 1440px; }
+.camera-app h1 { font-size: 2rem; }
+.camera-app h2 { font-size: 1.125rem; margin-bottom: 12px; }
+.camera-app header { gap: 24px; flex-wrap: wrap; }
+.camera-app a { color: #005ac2; text-underline-offset: 3px; }
+.camera-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 32px; }
+.camera-toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; }
+.camera-picker { flex: 1 1 220px; }
+.camera-picker label, .camera-upload label, .camera-settings label { display: block; font-weight: 500; margin-bottom: 8px; }
+.camera-stage { background: #191c1e; color: #eff1f3; border-radius: 8px; overflow: hidden; min-height: 240px; aspect-ratio: 16 / 9; display: grid; place-items: center; }
+.camera-stage canvas { width: 100%; height: 100%; object-fit: contain; }
+.camera-stage [hidden] { display: none; }
+.camera-stage p { padding: 24px; max-width: 45ch; text-align: center; }
+.camera-message { margin: 12px 0 24px; min-height: 1.5em; color: var(--color-on-surface-variant); }
+.camera-message.error { color: #a30e0e; }
+.camera-upload { padding-top: 20px; border-top: 1px solid var(--color-outline-variant); }
+.camera-upload input { max-width: 100%; font: inherit; }
+.camera-results { padding-top: 4px; min-width: 0; }
+.pet-summary { font-size: 1.375rem; font-weight: 600; margin-bottom: 12px; }
+.detection-list { list-style: none; }
+.detection-list li { padding: 8px 0; border-bottom: 1px solid var(--color-outline-variant); display: flex; justify-content: space-between; gap: 16px; }
+.camera-meta, .camera-settings p, .camera-integration p { color: var(--color-on-surface-variant); font-size: .9375rem; }
+.camera-meta { margin-top: 12px; }
+.camera-settings, .camera-integration { margin-top: 28px; }
+.camera-settings input { width: 100%; accent-color: #005ac2; }
+.camera-settings p, .camera-integration p { margin: 10px 0; }
+.camera-app .btn-primary { background: #005ac2; }
+.camera-app :focus-visible { outline: 3px solid #005ac2; outline-offset: 3px; }
+@media (max-width: 850px) { .camera-layout { grid-template-columns: 1fr; gap: 24px; } .camera-stage { min-height: 180px; } }
+@media (prefers-reduced-motion: reduce) { .camera-app * { transition: none !important; animation: none !important; } }

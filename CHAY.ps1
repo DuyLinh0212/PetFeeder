@@ -1,4 +1,4 @@
-param([ValidateSet('backend','app','build','test')][string]$Mode='backend')
+param([ValidateSet('backend','app','build','test','yolo')][string]$Mode='backend')
 $ErrorActionPreference='Stop'
 $projectRoot=$PSScriptRoot
 function Require-Command([string]$Name) {
@@ -7,6 +7,14 @@ function Require-Command([string]$Name) {
   return $command.Source
 }
 switch($Mode){
+  'yolo' {
+    $python=Join-Path $projectRoot 'work\yolo-env\Scripts\python.exe'
+    if(Test-Path -LiteralPath $python){
+      & $python (Join-Path $projectRoot 'YOLO_PetFeeder\yolo_api.py')
+    } else {
+      & (Join-Path $projectRoot 'YOLO_PetFeeder\start-yolo.ps1')
+    }
+  }
   'backend' {
     $runtime=Require-Command node
     Push-Location (Join-Path $projectRoot 'petfeeder_backend')
