@@ -6,7 +6,8 @@ import '../widgets/app_components.dart';
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback onRefresh;
-  const SettingsScreen({super.key, required this.onRefresh});
+  final DeviceStatus? status;
+  const SettingsScreen({super.key, required this.onRefresh, this.status});
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -20,18 +21,225 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _testing = false;
   bool _clearing = false;
   String? _connectionMessage;
-  bool _connectionOk = false;
+  bool _connectionOk = false, _savingSafety = false;
+  String? _configProblem;
+  final _limits = <String, TextEditingController>{
+    'bowl_capacity_g': TextEditingController(),
+    'max_daily_portion_g': TextEditingController(),
+    'max_daily_feeds': TextEditingController(),
+    'safe_interval_sec': TextEditingController(),
+  };
+  Future<void> _loadConfig() async {
+    try {
+      final cfg = await ApiService().getDeviceConfig();
+      if (!mounted) return;
+      setState(() {
+        for (final e in _limits.entries) {
+          e.value.text = '${cfg[e.key] ?? ''}';
+        }
+        _configProblem = null;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _configProblem = 'Chưa đọc được giới hạn thiết bị.');
+      }
+    }
+  }
+
+  Future<void> _saveSafety(Map<String, dynamic> patch) async {
+    if (_savingSafety) return;
+    setState(() => _savingSafety = true);
+    try {
+      await ApiService().updateDeviceConfig(patch);
+      if (!mounted) return;
+      showFeedback(context, 'Đã gửi. Chờ thiết bị cập nhật trạng thái.');
+      widget.onRefresh();
+    } catch (e) {
+      if (mounted) {
+        showFeedback(
+          context,
+          e.toString().replaceFirst('Exception: ', ''),
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingSafety = false);
+    }
+  }
+
+  Future<void> _confirmRefill() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Xác nhận hộp hạt?'),
+        content: const Text(
+          'Tôi đã kiểm tra, vệ sinh hộp, thay hạt phù hợp và đóng nắp. Thiết bị không tự xác định được chất lượng thức ăn.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Đóng'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Tôi đã kiểm tra'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await _saveSafety({'verify_refill': true});
+    }
+  }
+
+  Widget _safetyCard() {
+    final status = widget.status;
+    final known = status?.online == true;
+    final enabled = known && !_savingSafety;
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'An toàn & hộp hạt',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            !known
+                ? 'Chưa có trạng thái thiết bị mới'
+                : status?.lockdown == true
+                ? 'Đang khóa cấp hạt'
+                : 'Khóa an toàn đang mở',
+          ),
+          Text(
+            !known
+                ? 'Chưa có dữ liệu xác nhận hộp hạt'
+                : status?.hopperVerified == true
+                ? 'Chủ đã xác nhận hộp hạt'
+                : 'Cần chủ kiểm tra và xác nhận hộp hạt',
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Chất lượng thức ăn: chưa thể xác định bằng cảm biến hiện có.',
+            style: TextStyle(color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: enabled
+                    ? () => _saveSafety({'lockdown': status?.lockdown != true})
+                    : null,
+                icon: const Icon(Icons.lock_outline_rounded),
+                label: Text(
+                  status?.lockdown == true ? 'Mở khóa an toàn' : 'Khóa cấp hạt',
+                ),
+              ),
+              OutlinedButton(
+                onPressed: enabled
+                    ? () => _saveSafety({'mark_refill': true})
+                    : null,
+                child: const Text('Đã nạp / thay hạt'),
+              ),
+              FilledButton(
+                onPressed:
+                    enabled &&
+                        status?.busy != true &&
+                        status?.hopperVerified != true
+                    ? _confirmRefill
+                    : null,
+                child: const Text('Xác nhận hộp hạt'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            !known
+                ? 'Chưa đọc được trạng thái cảm biến bát.'
+                : status?.presenceAvailable == true
+                ? (status?.bowlPresent == true
+                      ? 'Bát đã được phát hiện.'
+                      : 'Chưa phát hiện bát.')
+                : 'Chưa có cảm biến hiện diện bát: chưa thể cấp hạt an toàn.',
+          ),
+          if (status?.simulationMode == true)
+            const Text(
+              'Đang dùng dữ liệu mô phỏng.',
+              style: TextStyle(color: AppTheme.accentAmber),
+            ),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Giới hạn cấp hạt'),
+            children: [
+              if (_configProblem != null) Text(_configProblem!),
+              for (final entry in _limits.entries)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: TextField(
+                    controller: entry.value,
+                    enabled: enabled && status?.busy != true,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: switch (entry.key) {
+                        'bowl_capacity_g' => 'Sức chứa bát (g)',
+                        'max_daily_portion_g' =>
+                          'Tổng lượng tối đa mỗi ngày (g)',
+                        'max_daily_feeds' => 'Số lần cấp tối đa mỗi ngày',
+                        _ => 'Khoảng cách giữa hai bữa (giây)',
+                      },
+                    ),
+                  ),
+                ),
+              OutlinedButton(
+                onPressed:
+                    enabled && status?.busy != true && _configProblem == null
+                    ? () {
+                        final values = <String, dynamic>{};
+                        for (final entry in _limits.entries) {
+                          final n = num.tryParse(entry.value.text);
+                          if (n == null || !n.isFinite) {
+                            showFeedback(
+                              context,
+                              'Nhập giới hạn bằng số hợp lệ.',
+                              error: true,
+                            );
+                            return;
+                          }
+                          values[entry.key] = n;
+                        }
+                        _saveSafety(values);
+                      }
+                    : null,
+                child: const Text('Lưu giới hạn'),
+              ),
+              TextButton(
+                onPressed: _savingSafety ? null : _loadConfig,
+                child: const Text('Đọc lại cấu hình'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void initState() {
     super.initState();
     _url.text = ApiService().baseUrl;
     _loadAlerts();
+    _loadConfig();
   }
 
   @override
   void dispose() {
     _url.dispose();
+    for (final c in _limits.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -70,6 +278,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
       widget.onRefresh();
       await _loadAlerts();
+      await _loadConfig();
     } catch (_) {
       if (mounted) {
         setState(() {
@@ -289,6 +498,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+          const SizedBox(height: 16),
+          _safetyCard(),
           const SizedBox(height: 28),
           Wrap(
             alignment: WrapAlignment.spaceBetween,

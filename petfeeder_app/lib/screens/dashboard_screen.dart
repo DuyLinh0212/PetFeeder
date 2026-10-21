@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
-import '../services/api_service.dart';
+import '../services/feeding_session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
 
 class DashboardScreen extends StatefulWidget {
+  final FeedingSession session;
   final DeviceStatus? status;
   final bool isLoading;
   final Future<void> Function() onRefresh;
   const DashboardScreen({
     super.key,
+    required this.session,
     required this.status,
     required this.isLoading,
     required this.onRefresh,
@@ -21,44 +23,29 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   int _portion = 30;
-  bool _submitting = false;
+  bool get _submitting => widget.session.posting || widget.session.pending;
 
   Future<void> _feed({bool override = false}) async {
-    if (_submitting || widget.status?.online != true) return;
-    setState(() => _submitting = true);
-    Map<String, dynamic>? result;
-    try {
-      result = await ApiService().feedNow(
-        portion: _portion,
-        override: override,
-      );
-      if (!mounted) return;
-      if (result['success'] == true) {
-        showFeedback(context, result['message'] as String);
-        await widget.onRefresh();
-      }
-    } catch (_) {
-      if (mounted) {
-        showFeedback(
-          context,
-          'Chưa gửi được lệnh. Hãy kiểm tra kết nối rồi thử lại.',
-          error: true,
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _submitting = false);
+    if (_submitting ||
+        widget.status?.online != true ||
+        widget.status?.feedBlockReason != null) {
+      return;
     }
-    if (!mounted || result == null || result['success'] == true) return;
+    final result = await widget.session.send(
+      portion: _portion,
+      override: override,
+    );
+    if (!mounted) return;
+    if (result['success'] == true) {
+      await widget.onRefresh();
+      return;
+    }
     final duplicate = result['code'] == 'BLOCKED_DUPLICATE';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        icon: Icon(
-          duplicate ? Icons.timer_outlined : Icons.info_outline_rounded,
-          color: AppTheme.accentAmber,
-        ),
         title: Text(duplicate ? 'Bữa ăn vừa được cấp' : 'Chưa thể cho ăn'),
-        content: Text(result!['message'] as String),
+        content: Text(result['message'] as String? ?? 'Hãy kiểm tra thiết bị.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -72,7 +59,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
     );
-    // Override is explicit and applies to this request only.
     if (confirmed == true && mounted) await _feed(override: true);
   }
 
@@ -82,7 +68,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final time = date == null
         ? status.lastFeedTime!
         : DateFormat('HH:mm · dd/MM').format(date.toLocal());
-    return 'Lần gần nhất: $time · ${status.lastFeedPortionG.toStringAsFixed(0)} g';
+    return 'Lần gần nhất: $time · ${status.lastFeedPortionG == null ? 'lượng chưa xác định' : '${status.lastFeedPortionG!.toStringAsFixed(0)} g'}';
   }
 
   String _systemLabel(String value) => switch (value.toUpperCase()) {
@@ -188,28 +174,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final status = widget.status;
     final online = status?.online == true;
     final known = status != null && online;
+    final foodKnown =
+        known && status.ultrasonicValid && status.foodLevelPercent != null;
+    final bowlKnown = known && status.scaleValid && status.bowlWeightG != null;
     final percent = (status?.foodLevelPercent ?? 0).clamp(0, 100);
     final low = percent <= 20;
     final food = _metric(
       label: 'Hạt trong hộp',
-      value: known ? '$percent%' : '—',
+      value: foodKnown ? '$percent%' : '—',
       icon: Icons.inventory_2_outlined,
       highlighted: true,
-      caption: !known
+      caption: !foodKnown
           ? 'Chưa có dữ liệu mới'
           : low
           ? 'Cần thêm hạt'
           : percent <= 45
           ? 'Nên chuẩn bị thêm hạt'
           : 'Đủ hạt cho bé',
-      captionColor: known && low ? const Color(0xFFFFC4B8) : null,
-      progress: known ? percent / 100 : 0,
+      captionColor: foodKnown && low ? const Color(0xFFFFC4B8) : null,
+      progress: foodKnown ? percent / 100 : 0,
     );
     final bowl = _metric(
       label: 'Trong bát',
-      value: known ? '${status.bowlWeightG.toStringAsFixed(1)} g' : '—',
+      value: bowlKnown ? '${status.bowlWeightG!.toStringAsFixed(1)} g' : '—',
       icon: Icons.rice_bowl_rounded,
-      caption: known ? 'Khối lượng hiện tại' : 'Chưa có dữ liệu mới',
+      caption: bowlKnown ? 'Khối lượng hiện tại' : 'Chưa có dữ liệu mới',
     );
     return PageContent(
       child: RefreshIndicator(
@@ -262,7 +251,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(height: 3),
                         Text(
                           online
-                              ? _systemLabel(status!.systemStatus)
+                              ? (status!.simulationMode
+                                    ? 'Mô phỏng · ${_systemLabel(status.systemStatus)}'
+                                    : _systemLabel(status.systemStatus))
                               : 'Kiểm tra nguồn điện, Wi-Fi và địa chỉ trong Cài đặt.',
                           style: const TextStyle(
                             color: AppTheme.textMuted,
@@ -336,10 +327,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: !online || _submitting || widget.isLoading
+                      onPressed:
+                          !online ||
+                              status?.feedBlockReason != null ||
+                              _submitting ||
+                              widget.isLoading
                           ? null
                           : _feed,
-                      icon: _submitting
+                      icon: widget.session.posting
                           ? const SizedBox(
                               width: 18,
                               height: 18,
@@ -347,15 +342,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             )
                           : const Icon(Icons.restaurant_rounded),
                       label: Text(
-                        _submitting ? 'Đang gửi…' : 'Cho ăn · $_portion g',
+                        widget.session.posting
+                            ? 'Đang gửi…'
+                            : widget.session.pending
+                            ? 'Đang chờ kết quả…'
+                            : 'Cho ăn · $_portion g',
                       ),
                     ),
                   ),
+                  if (widget.session.id != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      widget.session.label,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    if (widget.session.pending)
+                      TextButton.icon(
+                        onPressed: widget.session.checking
+                            ? null
+                            : widget.session.check,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Kiểm tra lại'),
+                      ),
+                  ],
                   const SizedBox(height: 10),
                   Text(
-                    online
-                        ? 'Tự động bảo vệ bé khỏi các bữa ăn quá gần nhau.'
-                        : 'Kết nối thiết bị để cho bé ăn từ xa.',
+                    status?.feedBlockReason ??
+                        'Tự động bảo vệ bé khỏi các bữa ăn quá gần nhau.',
                     style: const TextStyle(
                       fontSize: 12,
                       color: AppTheme.textMuted,

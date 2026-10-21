@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'models/models.dart';
 import 'services/api_service.dart';
+import 'services/feeding_session.dart';
 import 'theme/app_theme.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/schedules_screen.dart';
@@ -28,6 +29,11 @@ class MainHomeScreen extends StatefulWidget {
 }
 
 class _MainHomeScreenState extends State<MainHomeScreen> {
+  final _feeding = FeedingSession();
+  void _feedingChanged() {
+    if (mounted) setState(() {});
+  }
+
   int _currentIndex = 0;
   final _visited = <int>{0};
   DeviceStatus? _deviceStatus;
@@ -38,6 +44,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   @override
   void initState() {
     super.initState();
+    _feeding.addListener(_feedingChanged);
     _fetchStatus();
     _pollingTimer = Timer.periodic(
       const Duration(seconds: 3),
@@ -48,6 +55,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   @override
   void dispose() {
     _pollingTimer?.cancel();
+    _feeding.removeListener(_feedingChanged);
+    _feeding.dispose();
     super.dispose();
   }
 
@@ -61,7 +70,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     if (!silent && mounted) setState(() => _isLoading = true);
     try {
       final status = await ApiService().getDeviceStatus();
-      if (mounted) setState(() => _deviceStatus = status);
+      if (mounted) {
+        setState(() => _deviceStatus = status);
+        if (status.busy && status.activeCommandId != null) {
+          _feeding.recover(status.activeCommandId!);
+        }
+      }
     } catch (_) {
       if (mounted) setState(() => _deviceStatus = null);
     } finally {
@@ -73,13 +87,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   Widget build(BuildContext context) {
     final screens = <Widget>[
       DashboardScreen(
+        session: _feeding,
         status: _deviceStatus,
         isLoading: _isLoading,
         onRefresh: _fetchStatus,
       ),
       const SchedulesScreen(),
-      const HistoryScreen(),
-      SettingsScreen(onRefresh: _fetchStatus),
+      HistoryScreen(session: _feeding),
+      SettingsScreen(onRefresh: _fetchStatus, status: _deviceStatus),
     ];
     return Scaffold(
       appBar: AppBar(

@@ -34,39 +34,79 @@ class ApiService {
     }
   }
 
-  // 2. Kích hoạt lệnh Cho ăn ngay (FR-08)
+  Future<Map<String, dynamic>> _commandRequest(
+    String path,
+    Map<String, dynamic> body,
+  ) async {
+    final res = await http
+        .post(
+          Uri.parse('$baseUrl$path'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 5));
+    final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    return {...data, 'success': res.statusCode == 202};
+  }
+
   Future<Map<String, dynamic>> feedNow({
     required int portion,
     required bool override,
-  }) async {
-    final uri = Uri.parse('$baseUrl/api/feeding/feed');
+    required String commandId,
+    String? retryOf,
+    bool confirmBowl = false,
+  }) => _commandRequest(
+    retryOf == null
+        ? '/api/feeding/feed'
+        : '/api/feeding/commands/${Uri.encodeComponent(retryOf)}/retry',
+    {
+      'command_id': commandId,
+      'portion': portion,
+      'override': override,
+      'confirm_bowl': confirmBowl,
+    },
+  );
+
+  Future<Map<String, dynamic>> getCommand(String id) async {
     final res = await http
-        .post(
-          uri,
+        .get(
+          Uri.parse('$baseUrl/api/feeding/commands/${Uri.encodeComponent(id)}'),
+        )
+        .timeout(const Duration(seconds: 4));
+    if (res.statusCode != 200) {
+      throw Exception('Chưa tìm thấy trạng thái lệnh.');
+    }
+    return (jsonDecode(utf8.decode(res.bodyBytes))['data']
+        as Map<String, dynamic>);
+  }
+
+  Future<Map<String, dynamic>> cancelCommand(String id) => _commandRequest(
+    '/api/feeding/commands/${Uri.encodeComponent(id)}/cancel',
+    {},
+  );
+
+  Future<Map<String, dynamic>> getDeviceConfig() async {
+    final res = await http
+        .get(Uri.parse('$baseUrl/api/device/config'))
+        .timeout(const Duration(seconds: 4));
+    if (res.statusCode != 200) throw Exception('Chưa đọc được cấu hình.');
+    return jsonDecode(utf8.decode(res.bodyBytes))['data']
+        as Map<String, dynamic>;
+  }
+
+  Future<void> updateDeviceConfig(Map<String, dynamic> patch) async {
+    final res = await http
+        .put(
+          Uri.parse('$baseUrl/api/device/config'),
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'portion': portion, 'override': override}),
+          body: jsonEncode(patch),
         )
         .timeout(const Duration(seconds: 5));
-
-    final data = jsonDecode(utf8.decode(res.bodyBytes));
-    if (res.statusCode == 200) {
-      return {'success': true, 'message': data['message'] ?? 'Thành công'};
-    } else if (res.statusCode == 409) {
-      // Bị chặn do ăn trùng (Duplicate feed protection)
-      return {
-        'success': false,
-        'code': 'BLOCKED_DUPLICATE',
-        'message':
-            data['message'] ?? 'Lệnh cho ăn bị từ chối do trùng thời gian!',
-        'remaining_sec': data['remaining_sec'] ?? 0,
-      };
-    } else {
-      return {
-        'success': false,
-        'code': data['code'] ?? 'ERROR',
-        'message':
-            data['message'] ?? 'Lỗi khi gửi lệnh cho ăn (${res.statusCode})',
-      };
+    if (res.statusCode != 202) {
+      throw Exception(
+        jsonDecode(utf8.decode(res.bodyBytes))['message'] ??
+            'Chưa gửi được cấu hình.',
+      );
     }
   }
 

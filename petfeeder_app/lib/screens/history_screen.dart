@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/feeding_session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
 
 class HistoryScreen extends StatefulWidget {
-  const HistoryScreen({super.key});
+  final FeedingSession session;
+  const HistoryScreen({super.key, required this.session});
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
@@ -93,6 +95,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     'JAM_ERROR' => ('Kẹt thức ăn', AppTheme.accentCoral),
     'EMPTY' || 'FOOD_EMPTY' => ('Hết hạt', AppTheme.accentCoral),
     'BLOCKED' || 'BLOCKED_DUPLICATE' => ('Đã chặn', AppTheme.accentAmber),
+    'RESUMED' => ('Đã chuyển sang phiên cấp tiếp', AppTheme.textMuted),
+    'PARTIAL' => ('Cấp chưa đủ', AppTheme.accentAmber),
+    'PAUSED' => ('Chờ đặt lại bát', AppTheme.accentAmber),
+    'INTERRUPTED' => ('Đã dừng', AppTheme.accentCoral),
+    'TIMEOUT' => ('Quá thời gian', AppTheme.accentCoral),
+    'REJECTED' => ('Đã từ chối', AppTheme.accentAmber),
     'SENSOR_ERROR' => ('Lỗi cảm biến', AppTheme.accentCoral),
     _ => (value, AppTheme.textMuted),
   };
@@ -104,6 +112,48 @@ class _HistoryScreenState extends State<HistoryScreen> {
     'override' => ('Cho ăn bổ sung', Icons.restaurant_rounded),
     _ => ('Thiết bị', Icons.pets_rounded),
   };
+
+  Future<void> _retry(FeedingRecord r) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          r.status == 'PAUSED'
+              ? 'Đã đặt lại đúng bát?'
+              : 'Cấp tiếp phần còn thiếu?',
+        ),
+        content: Text(
+          r.status == 'PAUSED'
+              ? 'Đặt lại đúng bát, giữ nguyên lượng hạt trong bát. Thiết bị sẽ kiểm tra cân trước khi tiếp tục.'
+              : 'Kiểm tra hộp hạt và cơ cấu cấp. Chỉ cấp phần còn thiếu của phiên này.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Đóng'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Xác nhận'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final response = await widget.session.send(
+      portion: r.rootTargetG.round(),
+      retryOf: r.commandId,
+      confirmBowl: r.status == 'PAUSED',
+    );
+    if (!mounted) return;
+    showFeedback(
+      context,
+      response['success'] == true
+          ? 'Đang chờ kết quả cấp tiếp.'
+          : response['message'] as String? ?? 'Chưa thể cấp tiếp.',
+      error: response['success'] != true,
+    );
+  }
 
   Widget _record(FeedingRecord r) {
     final (label, color) = _status(r.status);
@@ -146,7 +196,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${r.actualWeightG.toStringAsFixed(1)} g',
+                      r.actualWeightG == null
+                          ? 'Chưa xác định'
+                          : '${r.actualWeightG!.toStringAsFixed(1)} g',
                       style: const TextStyle(
                         fontSize: 26,
                         height: 1.1,
@@ -167,6 +219,53 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             ],
           ),
+          if (r.errorCode != 'NONE') ...[
+            const SizedBox(height: 10),
+            Text(
+              r.errorCode,
+              style: const TextStyle(color: AppTheme.accentCoral),
+            ),
+          ],
+          if (r.commandId != null &&
+              r.retryCommandId == null &&
+              ((r.measurementValid &&
+                      ['JAM_ERROR', 'PARTIAL', 'TIMEOUT'].contains(r.status) &&
+                      r.cumulativeDeliveredG != null &&
+                      r.rootTargetG - r.cumulativeDeliveredG! >
+                          r.portionToleranceG) ||
+                  r.status == 'PAUSED'))
+            OutlinedButton(
+              onPressed:
+                  widget.session.posting ||
+                      (widget.session.pending &&
+                          !(widget.session.paused &&
+                              widget.session.id == r.commandId))
+                  ? null
+                  : () => _retry(r),
+              child: const Text('Cấp tiếp phần thiếu'),
+            ),
+          if (r.commandId != null && r.status == 'PAUSED')
+            TextButton(
+              onPressed: () async {
+                try {
+                  final response = await ApiService().cancelCommand(
+                    r.commandId!,
+                  );
+                  if (!mounted) return;
+                  showFeedback(
+                    context,
+                    response['message'] as String? ?? 'Đang chờ xác nhận hủy.',
+                  );
+                  await widget.session.check();
+                  await _load();
+                } catch (_) {
+                  if (mounted) {
+                    showFeedback(context, 'Chưa hủy được phiên.', error: true);
+                  }
+                }
+              },
+              child: const Text('Hủy phiên đang chờ'),
+            ),
           if (r.message.isNotEmpty) ...[
             const SizedBox(height: 14),
             const Divider(height: 1),
@@ -197,6 +296,26 @@ class _HistoryScreenState extends State<HistoryScreen> {
             title: 'Lịch sử cho ăn',
             subtitle: 'Thời gian, khẩu phần và kết quả từng bữa.',
           ),
+          if (widget.session.id != null) ...[
+            SectionCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(widget.session.label),
+                  TextButton(
+                    onPressed: widget.session.checking
+                        ? null
+                        : () async {
+                            await widget.session.check();
+                            if (mounted) await _load();
+                          },
+                    child: const Text('Kiểm tra kết quả'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (_loading)
             const Padding(
               padding: EdgeInsets.all(32),

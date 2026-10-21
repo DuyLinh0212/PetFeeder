@@ -18,6 +18,16 @@ class FakeBackend {
   bool duplicate = false;
   bool failDelete = false;
   bool failCandidate = false;
+  bool scaleValid = true,
+      hopperVerified = true,
+      presenceAvailable = true,
+      lockdown = false;
+  String commandStatus = 'ACCEPTED';
+  String? lastCommandId;
+  String errorCode = 'NONE';
+  double? actualWeight = 30;
+  bool failCommand = false;
+  List<Map<String, dynamic>>? historyRows;
   Completer<void>? pendingFeed;
   final requests = <http.Request>[];
   final schedule = <String, dynamic>{
@@ -44,9 +54,16 @@ class FakeBackend {
     if (path == '/api/device/status') {
       return response({
         'online': online,
+        'contract_version': 2,
+        'scale_valid': scaleValid,
+        'ultrasonic_valid': true,
+        'hopper_verified': hopperVerified,
+        'bowl_presence_available': presenceAvailable,
+        'bowl_present': true,
+        'lockdown': lockdown,
         'system_status': 'SAN SANG',
         'food_level_percent': 76,
-        'bowl_weight_g': 24.5,
+        'bowl_weight_g': scaleValid ? 24.5 : null,
         'last_feed_time': '2026-10-21T00:00:00Z',
         'last_feed_portion_g': 35,
       });
@@ -67,7 +84,43 @@ class FakeBackend {
           headers: {'content-type': 'application/json; charset=utf-8'},
         );
       }
-      return response(null);
+      lastCommandId = jsonDecode(req.body)['command_id'];
+      return response({
+        'command_id': lastCommandId,
+        'status': commandStatus,
+        'actual_weight_g': null,
+      }, code: 202);
+    }
+    if (path.startsWith('/api/feeding/commands/') && req.method == 'POST') {
+      lastCommandId = jsonDecode(req.body)['command_id'];
+      return response({
+        'command_id': lastCommandId,
+        'status': 'ACCEPTED',
+      }, code: 202);
+    }
+    if (path.startsWith('/api/feeding/commands/')) {
+      if (failCommand) throw Exception('offline');
+      return response({
+        'command_id': lastCommandId,
+        'status': commandStatus,
+        'actual_weight_g': actualWeight,
+        'error_code': errorCode,
+      });
+    }
+    if (path == '/api/device/config') {
+      if (req.method == 'PUT') {
+        final body = jsonDecode(req.body);
+        if (body['mark_refill'] == true) hopperVerified = false;
+        if (body['verify_refill'] == true) hopperVerified = true;
+        if (body['lockdown'] != null) lockdown = body['lockdown'];
+        return response({}, code: 202);
+      }
+      return response({
+        'bowl_capacity_g': 150,
+        'max_daily_portion_g': 200,
+        'max_daily_feeds': 6,
+        'safe_interval_sec': 180,
+      });
     }
     if (req.method == 'POST' && path == '/api/schedules') {
       return response({
@@ -83,17 +136,20 @@ class FakeBackend {
     if (empty) return response([]);
     if (path == '/api/schedules') return response([schedule]);
     if (path == '/api/feeding/history') {
-      return response([
-        {
-          'id': 'meal',
-          'timestamp': '2026-10-21T00:00:00Z',
-          'trigger_source': 'schedule',
-          'target_portion_g': 35,
-          'actual_weight_g': 34.8,
-          'status': 'SUCCESS',
-          'message': 'Bữa sáng đã được cấp đúng lịch cho bé.',
-        },
-      ]);
+      return response(
+        historyRows ??
+            [
+              {
+                'id': 'meal',
+                'timestamp': '2026-10-21T00:00:00Z',
+                'trigger_source': 'schedule',
+                'target_portion_g': 35,
+                'actual_weight_g': 34.8,
+                'status': 'SUCCESS',
+                'message': 'Bữa sáng đã được cấp đúng lịch cho bé.',
+              },
+            ],
+      );
     }
     if (path == '/api/notifications') {
       return response([
@@ -321,6 +377,9 @@ void main() {
         expect(find.text('Bữa ăn vừa được cấp'), findsOneWidget);
         await tester.tap(find.text('Vẫn cho ăn'));
         await tester.pumpAndSettle();
+        api.commandStatus = 'SUCCESS';
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
         await tester.tap(feed);
         await tester.pumpAndSettle();
         final sent = api.requests
@@ -436,4 +495,186 @@ void main() {
       }, () => MockClient(api.handle));
     },
   );
+  testWidgets(
+    'acceptance waits for measured final result without another POST',
+    (tester) {
+      final api = FakeBackend();
+      return http.runWithClient(() async {
+        await start(tester);
+        await tester.tap(find.text('Cho ăn · 30 g'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Đã cấp'), findsNothing);
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Đang chờ kết quả…'),
+              )
+              .onPressed,
+          isNull,
+        );
+        api.commandStatus = 'DISPENSING';
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
+        expect(find.text('Thiết bị đang cấp hạt…'), findsOneWidget);
+        api.commandStatus = 'SUCCESS';
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pumpAndSettle();
+        expect(find.text('Đã cấp 30.0 g.'), findsOneWidget);
+        expect(
+          api.requests
+              .where(
+                (r) => r.method == 'POST' && r.url.path == '/api/feeding/feed',
+              )
+              .length,
+          1,
+        );
+        expect(
+          jsonDecode(
+            api.requests.firstWhere((r) => r.method == 'POST').body,
+          )['command_id'],
+          isNotEmpty,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+      }, () => MockClient(api.handle));
+    },
+  );
+  testWidgets('failed result is distinct from success and keeps error code', (
+    tester,
+  ) {
+    final api = FakeBackend();
+    return http.runWithClient(() async {
+      await start(tester);
+      await tester.tap(find.text('Cho ăn · 30 g'));
+      await tester.pumpAndSettle();
+      api.commandStatus = 'SENSOR_ERROR';
+      api.errorCode = 'HX711_OFFLINE';
+      api.actualWeight = null;
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('HX711_OFFLINE'), findsOneWidget);
+      expect(find.textContaining('Đã cấp'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => MockClient(api.handle));
+  });
+  testWidgets(
+    'unknown sensor reading does not become zero and blocks feeding',
+    (tester) {
+      final api = FakeBackend()..scaleValid = false;
+      return http.runWithClient(() async {
+        await start(tester);
+        expect(find.text('24.5 g'), findsNothing);
+        expect(find.text('0.0 g'), findsNothing);
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Cho ăn · 30 g'),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(find.text('Cảm biến chưa có số đo hợp lệ.'), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }, () => MockClient(api.handle));
+    },
+  );
+  for (final reason in ['lock', 'refill', 'presence']) {
+    testWidgets('safety gate blocks feed: $reason', (tester) {
+      final api = FakeBackend();
+      if (reason == 'lock') api.lockdown = true;
+      if (reason == 'refill') api.hopperVerified = false;
+      if (reason == 'presence') api.presenceAvailable = false;
+      return http.runWithClient(() async {
+        await start(tester);
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.widgetWithText(FilledButton, 'Cho ăn · 30 g'),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(api.requests.where((r) => r.method == 'POST'), isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }, () => MockClient(api.handle));
+    });
+  }
+  testWidgets('lost result can be checked without sending more food', (tester) {
+    final api = FakeBackend();
+    return http.runWithClient(() async {
+      await start(tester);
+      await tester.tap(find.text('Cho ăn · 30 g'));
+      await tester.pumpAndSettle();
+      api.failCommand = true;
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      await reveal(tester, find.text('Kiểm tra lại'));
+      await tester.tap(find.text('Kiểm tra lại'));
+      await tester.pumpAndSettle();
+      expect(
+        api.requests
+            .where(
+              (r) => r.method == 'POST' && r.url.path == '/api/feeding/feed',
+            )
+            .length,
+        1,
+      );
+      api.failCommand = false;
+      api.commandStatus = 'SUCCESS';
+      await tester.tap(find.text('Kiểm tra lại'));
+      await tester.pumpAndSettle();
+      expect(find.text('Đã cấp 30.0 g.'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => MockClient(api.handle));
+  });
+  testWidgets('partial history offers explicit linked retry', (tester) {
+    final api = FakeBackend()
+      ..historyRows = [
+        {
+          'id': 'partial',
+          'command_id': 'partial',
+          'status': 'PARTIAL',
+          'measurement_valid': true,
+          'actual_weight_g': 20,
+          'target_portion_g': 50,
+          'root_target_g': 50,
+          'cumulative_delivered_g': 20,
+          'error_code': 'MAX_PULSES_REACHED',
+        },
+      ];
+    return http.runWithClient(() async {
+      await start(tester);
+      await navigate(tester, 'Nhật ký');
+      await tester.tap(find.text('Cấp tiếp phần thiếu'));
+      await tester.pumpAndSettle();
+      expect(api.requests.where((r) => r.method == 'POST'), isEmpty);
+      await tester.tap(find.text('Xác nhận'));
+      await tester.pumpAndSettle();
+      final sent = api.requests.singleWhere((r) => r.method == 'POST');
+      expect(sent.url.path, '/api/feeding/commands/partial/retry');
+      expect(jsonDecode(sent.body)['portion'], 50);
+      expect(find.textContaining('Đã cấp'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => MockClient(api.handle));
+  });
+  testWidgets('refill confirmation is explicit and separate from unlocking', (
+    tester,
+  ) {
+    final api = FakeBackend()
+      ..hopperVerified = false
+      ..lockdown = true;
+    return http.runWithClient(() async {
+      await start(tester);
+      await navigate(tester, 'Cài đặt');
+      await reveal(tester, find.text('Xác nhận hộp hạt'));
+      await tester.tap(find.text('Xác nhận hộp hạt'));
+      await tester.pumpAndSettle();
+      expect(api.requests.where((r) => r.method == 'PUT'), isEmpty);
+      await tester.tap(find.text('Tôi đã kiểm tra'));
+      await tester.pumpAndSettle();
+      final sent = api.requests.singleWhere((r) => r.method == 'PUT');
+      expect(jsonDecode(sent.body), {'verify_refill': true});
+      expect(api.lockdown, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => MockClient(api.handle));
+  });
 }
