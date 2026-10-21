@@ -3,235 +3,238 @@ import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
-
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<FeedingRecord> _records = [];
-  bool _isLoading = true;
+  bool _loading = true;
+  bool _failed = false;
+  bool _clearing = false;
 
   @override
   void initState() {
     super.initState();
-    _loadHistory();
+    _load();
   }
 
-  Future<void> _loadHistory() async {
-    setState(() => _isLoading = true);
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
     try {
-      final list = await ApiService().getHistory();
-      setState(() => _records = list);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Lỗi tải nhật ký: $e'), backgroundColor: AppTheme.accentCoral),
-        );
-      }
+      final records = await ApiService().getHistory();
+      if (mounted) setState(() => _records = records);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _handleClearHistory() async {
+  Future<void> _clear() async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Xác nhận xóa nhật ký'),
-        content: const Text('Bạn có muốn xóa toàn bộ lịch sử các lần cho ăn không?'),
+        title: const Text('Xóa nhật ký?'),
+        content: const Text(
+          'Toàn bộ lịch sử cho ăn sẽ bị xóa. Bạn không thể khôi phục thao tác này.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Giữ lại'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Xóa hết', style: TextStyle(color: AppTheme.accentCoral)),
+            child: const Text(
+              'Xóa nhật ký',
+              style: TextStyle(color: AppTheme.accentCoral),
+            ),
           ),
         ],
       ),
     );
-
-    if (confirm == true) {
-      await ApiService().clearHistory();
-      _loadHistory();
+    if (confirm != true || !mounted) return;
+    setState(() => _clearing = true);
+    try {
+      if (!await ApiService().clearHistory()) throw Exception('clear');
+      if (!mounted) return;
+      setState(() => _records = []);
+      showFeedback(context, 'Đã xóa nhật ký.');
+    } catch (_) {
+      if (mounted) {
+        showFeedback(
+          context,
+          'Chưa xóa được nhật ký. Hãy thử lại.',
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _clearing = false);
     }
   }
 
-  Widget _buildSourceIcon(String source) {
-    IconData icon;
-    Color bg;
-    Color iconColor;
-
-    switch (source.toLowerCase()) {
-      case 'app':
-        icon = Icons.phone_android_rounded;
-        bg = AppTheme.primaryLight;
-        iconColor = AppTheme.primaryDark;
-        break;
-      case 'schedule':
-        icon = Icons.alarm_rounded;
-        bg = const Color(0xFFE0F2FE);
-        iconColor = const Color(0xFF0284C7);
-        break;
-      case 'button':
-        icon = Icons.touch_app_rounded;
-        bg = const Color(0xFFFEF3C7);
-        iconColor = const Color(0xFFD97706);
-        break;
-      case 'override':
-        icon = Icons.flash_on_rounded;
-        bg = const Color(0xFFFFE4E6);
-        iconColor = const Color(0xFFE11D48);
-        break;
-      default:
-        icon = Icons.pets_rounded;
-        bg = AppTheme.background;
-        iconColor = AppTheme.textMuted;
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(color: bg, shape: BoxShape.circle),
-      child: Icon(icon, color: iconColor, size: 22),
-    );
+  String _date(String iso) {
+    final date = DateTime.tryParse(iso);
+    return date == null
+        ? iso
+        : DateFormat('HH:mm · dd/MM/yyyy').format(date.toLocal());
   }
 
-  Widget _buildStatusBadge(String status) {
-    Color bg;
-    Color text;
-    String label;
+  (String, Color) _status(String value) => switch (value.toUpperCase()) {
+    'SUCCESS' || 'HOAN TAT' => ('Đã cho ăn', AppTheme.accentGreen),
+    'JAM_ERROR' => ('Kẹt thức ăn', AppTheme.accentCoral),
+    'EMPTY' || 'FOOD_EMPTY' => ('Hết hạt', AppTheme.accentCoral),
+    'BLOCKED' || 'BLOCKED_DUPLICATE' => ('Đã chặn', AppTheme.accentAmber),
+    'SENSOR_ERROR' => ('Lỗi cảm biến', AppTheme.accentCoral),
+    _ => (value, AppTheme.textMuted),
+  };
 
-    switch (status.toUpperCase()) {
-      case 'SUCCESS':
-      case 'HOAN TAT':
-        bg = AppTheme.accentGreen.withAlpha(30);
-        text = AppTheme.accentGreen;
-        label = 'Thành công';
-        break;
-      case 'JAM_ERROR':
-        bg = AppTheme.accentCoral.withAlpha(30);
-        text = AppTheme.accentCoral;
-        label = 'Kẹt thức ăn';
-        break;
-      case 'EMPTY':
-        bg = AppTheme.accentCoral.withAlpha(30);
-        text = AppTheme.accentCoral;
-        label = 'Hết hạt';
-        break;
-      case 'BLOCKED':
-        bg = AppTheme.accentAmber.withAlpha(30);
-        text = AppTheme.accentAmber;
-        label = 'Bị chặn';
-        break;
-      default:
-        bg = AppTheme.border;
-        text = AppTheme.textMuted;
-        label = status;
-    }
+  (String, IconData) _source(String value) => switch (value.toLowerCase()) {
+    'app' => ('Từ ứng dụng', Icons.phone_android_rounded),
+    'schedule' => ('Theo lịch ăn', Icons.schedule_rounded),
+    'button' => ('Nút trên thiết bị', Icons.touch_app_rounded),
+    'override' => ('Cho ăn bổ sung', Icons.restaurant_rounded),
+    _ => ('Thiết bị', Icons.pets_rounded),
+  };
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10)),
-      child: Text(
-        label,
-        style: TextStyle(color: text, fontWeight: FontWeight.bold, fontSize: 11),
+  Widget _record(FeedingRecord r) {
+    final (label, color) = _status(r.status);
+    final (source, icon) = _source(r.triggerSource);
+    return SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                _date(r.timestamp),
+                style: const TextStyle(
+                  color: AppTheme.textMuted,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              StatusPill(label: label, color: color),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: const BoxDecoration(
+                  color: AppTheme.primaryLight,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: AppTheme.primary, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${r.actualWeightG.toStringAsFixed(1)} g',
+                      style: const TextStyle(
+                        fontSize: 26,
+                        height: 1.1,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      'Mục tiêu ${r.targetPortionG} g · $source',
+                      style: const TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 12,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (r.message.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            Text(
+              r.message,
+              style: const TextStyle(
+                color: AppTheme.textMuted,
+                fontSize: 13,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ],
       ),
     );
-  }
-
-  String _formatDateTime(String iso) {
-    try {
-      final dt = DateTime.parse(iso).toLocal();
-      return DateFormat('HH:mm - dd/MM/yyyy').format(dt);
-    } catch (_) {
-      return iso;
-    }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Nhật ký cho ăn'),
-        actions: [
-          if (_records.isNotEmpty)
-            IconButton(
-              icon: const Icon(Icons.delete_sweep_rounded),
-              tooltip: 'Xóa lịch sử',
-              onPressed: _handleClearHistory,
+  Widget build(BuildContext context) => PageContent(
+    child: RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: AppTheme.pagePadding,
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          const PageHeading(
+            title: 'Lịch sử cho ăn',
+            subtitle: 'Thời gian, khẩu phần và kết quả từng bữa.',
+          ),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_failed)
+            EmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: 'Chưa tải được nhật ký',
+              message: 'Kết nối lại để xem những bữa ăn gần đây.',
+              action: OutlinedButton(
+                onPressed: _load,
+                child: const Text('Thử lại'),
+              ),
+            )
+          else if (_records.isEmpty)
+            const EmptyState(
+              icon: Icons.history_rounded,
+              title: 'Một khởi đầu mới',
+              message: 'Các bữa ăn sẽ xuất hiện ở đây sau khi bạn cho bé ăn.',
+            )
+          else ...[
+            ..._records.map(
+              (r) => Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _record(r),
+              ),
             ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _clearing ? null : _clear,
+              icon: const Icon(Icons.delete_outline_rounded, size: 20),
+              label: Text(_clearing ? 'Đang xóa…' : 'Xóa nhật ký'),
+              style: TextButton.styleFrom(foregroundColor: AppTheme.textMuted),
+            ),
+          ],
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadHistory,
-              child: _records.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.history_rounded, size: 64, color: AppTheme.textLight),
-                          const SizedBox(height: 12),
-                          const Text('Chưa có lịch sử bữa ăn nào', style: TextStyle(color: AppTheme.textMuted)),
-                        ],
-                      ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: _records.length,
-                      separatorBuilder: (ctx, idx) => const SizedBox(height: 12),
-                      itemBuilder: (ctx, idx) {
-                        final r = _records[idx];
-                        return Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
-                              children: [
-                                _buildSourceIcon(r.triggerSource),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Text(
-                                            _formatDateTime(r.timestamp),
-                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                                          ),
-                                          const Spacer(),
-                                          _buildStatusBadge(r.status),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        r.message.isNotEmpty
-                                            ? r.message
-                                            : 'Nguồn lệnh: ${r.triggerSource.toUpperCase()}',
-                                        style: const TextStyle(fontSize: 13, color: AppTheme.textMuted),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'Khối lượng: ${r.actualWeightG.toStringAsFixed(1)}g / ${r.targetPortionG}g',
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                          color: AppTheme.textMain,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-    );
-  }
+    ),
+  );
 }
