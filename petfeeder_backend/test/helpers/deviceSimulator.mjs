@@ -6,13 +6,18 @@ export class DeviceSimulator {
     this.store=store;this.emitToBackend=emit;this.sendHeartbeat=heartbeat;this.clock=clock;
     this.s=store.get('device')||{config:{...defaults},schedules:[],seq:0,queue:[],active:null,
       last_end:0,scan:0,locked:false,food_since:null,stale_alert:false,observations:[]};
-    this.online=true;this.bootId=randomUUID();this.sensors={weight_g:0,calibrated:true,time_valid:true,auto_feed:true,
+    this.online=true;this.bootId=randomUUID();this.identity=null;this.sensors={weight_g:0,calibrated:true,time_valid:true,auto_feed:true,
       distance_cm:5,stable:true,bowl_present:true,jammed:false};this.lastTick=this.clock();
     if(this.s.active){const a=this.s.active;this.s.active=null;this.s.locked=true;
       this.result(a,'INTERRUPTED',null,'RECONCILIATION_REQUIRED');}
     this.save();
   }
   save(){this.store.put('device','state',this.s);}
+  setIdentity(p){this.identity={...p};}
+  petAllowed(c){const p=this.identity;return !!p&&p.camera_active===true&&p.matched===true&&p.source==='YOLO_PET_PRESENCE'&&
+    ['cat','dog'].includes(p.pet_type)&&p.confidence>=0.5&&p.expires_at>this.clock()&&p.issued_at<=this.clock()+10&&
+    c.pet_id===p.pet_id&&c.recognition_id===p.recognition_id&&c.recognition_expires_at===p.expires_at&&
+    c.recognition_source===p.source&&c.confidence===p.confidence;}
   event(status,fields={}){
     const e={event_id:`sim-${++this.s.seq}`,seq:this.s.seq,occurred_at:this.clock(),status,...fields};
     this.s.queue.push(e);this.save();if(!this.deferring)this.flush();return e;
@@ -41,7 +46,7 @@ export class DeviceSimulator {
     else if(this.s.locked)reason='RECONCILIATION_REQUIRED';
     else if(this.s.active)reason='BUSY';
     else if(cfg.lockdown)reason='SAFETY_LOCKOUT';
-    else if(cfg.require_pet)reason='UNKNOWN_PET';
+    else if(cfg.require_pet&&!this.petAllowed(c))reason='UNKNOWN_PET';
     else if(!cfg.food_confirmed)reason='UNVERIFIED';
     else if(!this.sensors.bowl_present)reason='BOWL_MISSING';
     else if(!this.sensors.calibrated || this.sensors.weight_g===null || !this.sensors.stable)reason='SENSOR_ERROR';

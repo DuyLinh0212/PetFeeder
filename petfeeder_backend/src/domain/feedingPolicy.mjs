@@ -3,7 +3,7 @@ export const defaults = Object.freeze({
   tank_height_cm:25, empty_threshold_cm:20,
   observation_s: 60, food_stale_s: 3600, command_ttl_s: 60,
   feed_timeout_s: 30, tolerance_g: 2, timezone_offset_min: 420,
-  require_pet: false, food_confirmed: false, food_label: '', lockdown: false,
+  require_pet: false, registered_pet_id: '', food_confirmed: false, food_label: '', lockdown: false,
   bowl_capacity_g: 150, max_daily_feeds: 6, max_feed_pulses: 15,
   coarse_fine_threshold_g: 10, anti_jam_max_retries: 3,
   pulse_step_angle: 90, pulse_step_ms: 600,
@@ -34,6 +34,7 @@ export function config(input) {
   for (const [k,v] of Object.entries(input)) {
     if (bounds[k]) number(v,...bounds[k],k,k!=='tolerance_g');
     else if (k==='require_pet' || k==='food_confirmed' || k==='lockdown') { if(typeof v!=='boolean') throw new Invalid('INVALID_FIELD', k); }
+    else if(k==='registered_pet_id') { if(v!=='')identifier(v,k); }
     else if(k==='food_label') { if(typeof v!=='string'||v.length>80) throw new Invalid('INVALID_FIELD',k); }
     else throw new Invalid('UNKNOWN_FIELD',k);
   }

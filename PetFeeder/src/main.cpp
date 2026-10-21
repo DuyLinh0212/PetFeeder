@@ -40,6 +40,7 @@ WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 HX711 scale;
 JsonDocument state;
+JsonDocument cameraIdentity;
 bool storageOK=false,weightOK=false,busy=false,motorOpen=false;
 float weightG=0,lastSample=0;
 float weightWindow[5]={0};int weightWindowCount=0,weightWindowIndex=0;
@@ -50,6 +51,7 @@ unsigned long scanSavedAt=0;
 String serialLine;
 String bootId;
 String root=MQTT_TOPIC_PREFIX;
+void heartbeat();
 bool validTime(){return time(nullptr)>1700000000;}
 long nowSec(){return (long)time(nullptr);}
 void servo(bool open){motorOpen=open;servoAngle(open?(finePulse?60:state["config"]["pulse_step_angle"].as<int>()):0);}
@@ -107,7 +109,7 @@ void defaults(){
   c["tank_height_cm"]=25;c["empty_threshold_cm"]=20;
   c["observation_s"]=60;c["food_stale_s"]=3600;c["command_ttl_s"]=60;
   c["feed_timeout_s"]=30;c["tolerance_g"]=2;c["timezone_offset_min"]=420;
-  c["require_pet"]=false;c["food_confirmed"]=false;c["food_label"]="";c["lockdown"]=false;
+  c["require_pet"]=false;c["registered_pet_id"]="";c["food_confirmed"]=false;c["food_label"]="";c["lockdown"]=false;
   c["bowl_capacity_g"]=150;c["max_daily_feeds"]=6;c["max_feed_pulses"]=15;
   c["coarse_fine_threshold_g"]=10;c["anti_jam_max_retries"]=3;
   c["pulse_step_angle"]=90;c["pulse_step_ms"]=600;
@@ -204,6 +206,7 @@ bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantCo
     e["command_id"]=c["command_id"];
     if(c["source"].is<const char*>())e["source"]=c["source"];
     if(numeric(c["target_portion_g"],0,500))e["target_portion_g"]=c["target_portion_g"];
+    for(const char* key:{"pet_id","recognition_id","recognition_source","confidence"})if(!c[key].isNull())e[key].set(c[key]);
     e["actual_weight_g"].set(actual);
   }
   if(error)e["error_code"]=error;
@@ -253,12 +256,30 @@ bool commandValid(JsonVariantConst c){
     (c["retry_of"].isNull()||ident(c["retry_of"]))&&
     c["expires_at"].as<long>()>c["created_at"].as<long>()&&c["expires_at"].as<long>()-c["created_at"].as<long>()<=300;
 }
+bool cameraValid(){
+  auto p=cameraIdentity.as<JsonObjectConst>();
+  return validTime()&&p["camera_active"]==true&&p["matched"]==true&&p["source"]=="YOLO_PET_PRESENCE"&&
+    ident(p["pet_id"])&&ident(p["recognition_id"])&&(p["pet_type"]=="cat"||p["pet_type"]=="dog")&&
+    numeric(p["confidence"],0,1)&&p["confidence"].as<float>()>=0.5&&
+    p["issued_at"].as<long>()<=nowSec()+10&&p["expires_at"].as<long>()>nowSec()&&
+    p["expires_at"].as<long>()-p["issued_at"].as<long>()<=5;
+}
+bool petAllowed(JsonVariantConst c){
+  return cameraValid()&&c["pet_id"]==cameraIdentity["pet_id"]&&c["recognition_id"]==cameraIdentity["recognition_id"]&&
+    c["recognition_expires_at"]==cameraIdentity["expires_at"]&&c["recognition_source"]==cameraIdentity["source"]&&
+    c["confidence"]==cameraIdentity["confidence"];
+}
+void attachCameraIdentity(JsonDocument& c){
+  if(!cfg()["require_pet"].as<bool>()||!cameraValid())return;
+  c["pet_id"]=cameraIdentity["pet_id"];c["recognition_id"]=cameraIdentity["recognition_id"];
+  c["recognition_expires_at"]=cameraIdentity["expires_at"];c["recognition_source"]=cameraIdentity["source"];c["confidence"]=cameraIdentity["confidence"];
+}
 void receive(JsonVariantConst c){
   if(!c.is<JsonObjectConst>()||!ident(c["command_id"])){event("REJECTED","INVALID_FIELD");return;}
   for(JsonObject old:state["history"].as<JsonArray>())if(old["command"]["command_id"]==c["command_id"]){
     String before,after;serializeJson(old["command"],before);serializeJson(c,after);
     // Compare semantic fields, independent of JSON field order.
-    for(const char* k:{"source","target_portion_g","created_at","expires_at","override","retry_of"})if(old["command"][k]!=c[k]){event("REJECTED","COMMAND_ID_CONFLICT");return;}
+    for(const char* k:{"source","target_portion_g","created_at","expires_at","override","retry_of","pet_id","recognition_id","recognition_expires_at","recognition_source","confidence"})if(old["command"][k]!=c[k]){event("REJECTED","COMMAND_ID_CONFLICT");return;}
     event("BLOCKED_DUPLICATE");
     JsonDocument val;val.set(old["actual_weight_g"]);emit(old["status"].as<const char*>(),c,val.as<JsonVariantConst>(),old["error_code"].as<const char*>());return;
   }
@@ -276,7 +297,7 @@ void receive(JsonVariantConst c){
   if(state["locked"].as<bool>()||state["events"].size()>MAX_EVENTS-6){reject(c,"RECONCILIATION_REQUIRED");return;}
   if(busy){reject(c,"BUSY");return;}
   if(cfg()["lockdown"].as<bool>()){reject(c,"SAFETY_LOCKOUT");return;}
-  if(cfg()["require_pet"].as<bool>()){reject(c,"UNKNOWN_PET");return;}
+  if(cfg()["require_pet"].as<bool>()&&!petAllowed(c)){reject(c,"UNKNOWN_PET");return;}
   if(!cfg()["food_confirmed"].as<bool>()){reject(c,"UNVERIFIED");return;}
   if(!state["calibrated"].as<bool>()||!weightOK||millis()-stableAt<700){reject(c,bowlMissing?"BOWL_MISSING":"SENSOR_ERROR");return;}
   if(now-state["last_end"].as<long>()<cf("min_interval_s")){reject(c,"COOLDOWN");return;}
@@ -313,7 +334,8 @@ bool configValid(JsonVariantConst c){
     {"coarse_fine_threshold_g",1,100},{"anti_jam_max_retries",1,10},
     {"pulse_step_angle",1,180},{"pulse_step_ms",100,2000}};
   for(auto b:bs)if(!numeric(c[b.key],b.lo,b.hi,strcmp(b.key,"tolerance_g")!=0))return false;
-  return c["lockdown"].is<bool>()&&c["require_pet"].is<bool>()&&c["food_confirmed"].is<bool>()&&c["food_label"].is<const char*>()&&
+  return c["lockdown"].is<bool>()&&c["require_pet"].is<bool>()&&c["registered_pet_id"].is<const char*>()&&
+    (!strlen(c["registered_pet_id"].as<const char*>())||ident(c["registered_pet_id"]))&&c["food_confirmed"].is<bool>()&&c["food_label"].is<const char*>()&&
     strlen(c["food_label"].as<const char*>())<=80&&(!c["food_confirmed"].as<bool>()||strlen(c["food_label"].as<const char*>())>0)&&
     c["empty_threshold_cm"].as<float>()<=c["tank_height_cm"].as<float>()&&
     c["max_portion_g"].as<float>()<=c["daily_limit_g"].as<float>()&&c["tolerance_g"].as<float>()<c["max_portion_g"].as<float>();
@@ -336,6 +358,15 @@ void callback(char* topic,byte* payload,unsigned int length){
     if(state["events"].size()&&state["events"][0]["event_id"]==d["event_id"]){state["events"].as<JsonArray>().remove(0);persist();}return;
   }
   if(t==root+"/command"){receive(d.as<JsonVariantConst>());return;}
+  if(t==root+"/identity"){
+    if(!ident(d["recognition_id"])||!ident(d["pet_id"])||!d["camera_active"].is<bool>()||!d["matched"].is<bool>()||
+      d["source"]!="YOLO_PET_PRESENCE"||!numeric(d["confidence"],0,1)||
+      !numeric(d["issued_at"],1700000000,4102444800.0,true)||!numeric(d["expires_at"],1700000000,4102444800.0,true)||
+      d["expires_at"].as<long>()<=d["issued_at"].as<long>()||d["expires_at"].as<long>()-d["issued_at"].as<long>()>5){event("REJECTED","INVALID_IDENTITY");return;}
+    bool before=cameraValid();String oldPet=cameraIdentity["pet_id"].as<String>();cameraIdentity.set(d);
+    if(before!=cameraValid()||oldPet!=d["pet_id"].as<String>())event(cameraValid()?"PET_DETECTED":"UNKNOWN_PET");
+    heartbeat();return;
+  }
   if(t==root+"/sync"){
     if(numeric(d["server_time"],1700000000,4102444800.0,true)){
       const long serverTime=d["server_time"].as<long>();
@@ -370,7 +401,7 @@ void scanSchedules(){
       if(!persist())return;
       if(now-due>=60){event("MISSED_SCHEDULE",key.c_str());continue;}
       JsonDocument c;c["command_id"]="sch:"+key;c["source"]="SCHEDULE";c["target_portion_g"]=s["target_portion_g"];
-      c["created_at"]=now;c["expires_at"]=now+(int)cf("command_ttl_s");c["override"]=false;receive(c.as<JsonVariantConst>());
+      c["created_at"]=now;c["expires_at"]=now+(int)cf("command_ttl_s");c["override"]=false;attachCameraIdentity(c);receive(c.as<JsonVariantConst>());
     }
   }
   state["last_scan"]=now;
@@ -378,6 +409,7 @@ void scanSchedules(){
 }
 void heartbeat(){
   JsonDocument h;h["device_id"]=DEVICE_ID;h["status"]=busy?"DANG CHO AN...":uiStatus;
+  h["pet_detected_yolo"]=cameraValid();if(cameraValid())h["pet_id"]=cameraIdentity["pet_id"];
   if(isfinite(distanceCM)){h["distance_cm"]=distanceCM;h["food_level_percent"]=(int)constrain((1-distanceCM/cf("tank_height_cm"))*100,0.0f,100.0f);}else{h["distance_cm"]=nullptr;h["food_level_percent"]=nullptr;}
   if(weightOK)h["bowl_weight_g"]=weightG;else h["bowl_weight_g"]=nullptr;
   h["sensor_mode"]=simAuto?"DEMO_AUTO":"HX711_MANUAL";h["ip"]=WiFi.localIP().toString();h["rssi"]=WiFi.RSSI();h["occurred_at"]=validTime()?nowSec():0;h["busy"]=busy;h["time_valid"]=validTime();
@@ -533,7 +565,7 @@ void loop(){
     if(!mqtt.connected()&&!busy&&ms-connectAt>=3000){connectAt=ms;
       if(mqtt.connect((String("esp-")+DEVICE_ID).c_str(),MQTT_USER,MQTT_PASS)){
         Serial.printf("Đã kết nối MQTT tới %s:%d.\n",MQTT_HOST,MQTT_PORT);
-        mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);heartbeat();
+        mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);mqtt.subscribe((root+"/identity").c_str(),1);heartbeat();
       }
     }
     if(mqtt.connected()){
@@ -574,6 +606,6 @@ void loop(){
   static bool wasDown=false;static unsigned long pressedAt=0;
   bool down=digitalRead(BUTTON_PIN)==LOW;
   if(down&&!wasDown&&ms-pressedAt>100){pressedAt=ms;if(!validTime()){event("TIME_INVALID");wasDown=down;return;}JsonDocument c;c["command_id"]="btn:"+id();c["source"]="BUTTON";
-    c["target_portion_g"]=20;c["created_at"]=nowSec();c["expires_at"]=nowSec()+(int)cf("command_ttl_s");c["override"]=false;receive(c.as<JsonVariantConst>());}
+    c["target_portion_g"]=20;c["created_at"]=nowSec();c["expires_at"]=nowSec()+(int)cf("command_ttl_s");c["override"]=false;attachCameraIdentity(c);receive(c.as<JsonVariantConst>());}
   wasDown=down;delay(1);
 }

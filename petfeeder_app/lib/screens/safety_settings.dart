@@ -136,9 +136,9 @@ class _SafetySettingsState extends State<SafetySettings> {
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Yêu cầu xác minh thú trước khi cấp'),
+              title: const Text('Yêu cầu phát hiện chó/mèo trước khi cấp'),
               subtitle: const Text(
-                'Mạch chưa có RFID/camera. Bật yêu cầu này sẽ chặn cấp với UNKNOWN_PET.',
+                'YOLO phải phát hiện chó/mèo từ ảnh camera mới. Không có kết quả hợp lệ sẽ chặn UNKNOWN_PET.',
               ),
               value: requirePet,
               onChanged: saving ? null : (v) => setState(() => requirePet = v),
