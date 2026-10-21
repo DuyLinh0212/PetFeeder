@@ -89,6 +89,7 @@ class FakeBackend {
       if (duplicate) {
         return http.Response(
           jsonEncode({
+            'success': false,
             'code': 'BLOCKED_DUPLICATE',
             'message': 'Bé vừa ăn. Vui lòng đợi hết khoảng chờ bảo vệ.',
             'remaining_sec': 120,
@@ -341,7 +342,13 @@ void main() {
       await tester.tap(find.text('Cho ăn · 30 g'));
       await tester.pumpAndSettle();
       expect(find.textContaining('Không tạo được mã yêu cầu'), findsOneWidget);
-      expect(find.text('Đang trực tuyến'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const ValueKey('feed-now')))
+            .onPressed,
+        isNotNull,
+        reason: 'Lỗi tạo ID không được làm thiết bị đang online thành offline.',
+      );
       expect(
         api.requests.where((r) => r.url.path == '/api/feeding/feed'),
         isEmpty,

@@ -69,50 +69,48 @@ void main() {
     expect(device.bowlWeightG, isNull);
   });
 
-  test(
-    'lost feed response leaves no saved lock or same-ID lookup',
-    () async {
-      var sends = 0;
-      var ids = 0;
-      var lookups = 0;
-      final client = MockClient((req) async {
-        if (req.url.path == '/api/id') {
-          ids++;
-          return http.Response(
-            jsonEncode({
-              'command_id': 'received-id-$ids',
-              'now': 1792500000,
-              'ttl_s': 60,
-            }),
-            200,
-          );
-        }
-        if (req.url.path == '/api/feeding/feed') {
-          sends++;
-          throw http.ClientException('Response lost after server committed');
-        }
-        if (req.url.path.startsWith('/api/commands/')) lookups++;
-        throw StateError('Unexpected ${req.url}');
-      });
-      final api = ApiService.testing(client, baseUrl: 'http://test');
-      await expectLater(
-        api.feedNow(portion: 30),
-        throwsA(
-          isA<FeedRequestException>()
-              .having((e) => e.mayHaveBeenSent, 'may have been sent', true)
-              .having((e) => e.message, 'message', contains('không lưu lệnh chờ')),
-        ),
-      );
-      expect(sends, 1);
-      expect(ids, 1);
-      expect(lookups, 0);
-      final prefs = await SharedPreferences.getInstance();
-      expect(
-        jsonDecode(prefs.getString('pending_feed:http://test')!)['command_id'],
-        'received-id',
-      );
-    },
-  );
+  test('lost feed response leaves no saved lock or same-ID lookup', () async {
+    var sends = 0;
+    var ids = 0;
+    var lookups = 0;
+    final client = MockClient((req) async {
+      if (req.url.path == '/api/id') {
+        ids++;
+        return http.Response(
+          jsonEncode({
+            'command_id': 'received-id-$ids',
+            'now': 1792500000,
+            'ttl_s': 60,
+          }),
+          200,
+        );
+      }
+      if (req.url.path == '/api/feeding/feed') {
+        sends++;
+        throw http.ClientException('Response lost after server committed');
+      }
+      if (req.url.path.startsWith('/api/commands/')) lookups++;
+      throw StateError('Unexpected ${req.url}');
+    });
+    final api = ApiService.testing(client, baseUrl: 'http://test');
+    await expectLater(
+      api.feedNow(portion: 30),
+      throwsA(
+        isA<FeedRequestException>()
+            .having((e) => e.mayHaveBeenSent, 'may have been sent', true)
+            .having(
+              (e) => e.message,
+              'message',
+              contains('không lưu lệnh chờ'),
+            ),
+      ),
+    );
+    expect(sends, 1);
+    expect(ids, 1);
+    expect(lookups, 0);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('pending_feed:http://test'), isNull);
+  });
 
   test(
     'incompatible ID endpoint fails before submitting or saving a command',
@@ -196,6 +194,7 @@ void main() {
             },
           }),
           409,
+          headers: {'content-type': 'application/json; charset=utf-8'},
         );
       }
       throw StateError('Unexpected ${req.url}');
@@ -205,7 +204,7 @@ void main() {
     expect(result['success'], false);
     expect(result['code'], 'WEIGHT_UNSTABLE');
     expect(result['data']['actual_weight_g'], isNull);
-    expect(result['message'], contains('cân lỗi hoặc bát không còn trên cân'));
+    expect(result['message'], contains('Cân chưa ổn định'));
   });
 
   test(
