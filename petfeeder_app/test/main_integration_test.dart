@@ -43,24 +43,18 @@ void main() {
       });
       final first = ApiService.testing(client, baseUrl: 'http://test');
       await expectLater(
-        first.feedNow(portion: 20, override: false),
+        first.feedNow(portion: 20),
         throwsA(isA<FeedRequestException>()),
       );
       final reopened = ApiService.testing(client, baseUrl: 'http://test');
-      await reopened.feedNow(portion: 80, override: false, retry: true);
+      await reopened.feedNow(portion: 80, retry: true);
       expect(payloads.length, 2);
       expect(payloads[1], payloads[0]);
       expect(jsonDecode(payloads[1])['portion'], 20);
     },
   );
 
-  test('N17 null actual weight stays unknown in main app history', () {
-    final row = FeedingRecord.fromJson({
-      'id': 'interrupted',
-      'status': 'INTERRUPTED',
-      'actual_weight_g': null,
-    });
-    expect(row.actualWeightG, isNull);
+  test('N17 null bowl weight stays unknown in main app status', () {
     final device = DeviceStatus.fromJson({
       'online': false,
       'bowl_weight_g': null,
@@ -89,17 +83,15 @@ void main() {
           sends++;
           throw http.ClientException('Response lost after server committed');
         }
-        if (req.url.path == '/api/history') {
+        if (req.url.path == '/api/commands/received-id') {
           return http.Response(
             jsonEncode({
-              'commands': [
-                {
-                  'command_id': 'received-id',
-                  'status': 'DISPENSING',
-                  'target_portion_g': 30,
-                  'actual_weight_g': 0,
-                },
-              ],
+              'data': {
+                'command_id': 'received-id',
+                'status': 'DISPENSING',
+                'target_portion_g': 30,
+                'actual_weight_g': 0,
+              },
             }),
             200,
           );
@@ -107,7 +99,7 @@ void main() {
         throw StateError('Unexpected ${req.url}');
       });
       final api = ApiService.testing(client, baseUrl: 'http://test');
-      final result = await api.feedNow(portion: 30, override: false);
+      final result = await api.feedNow(portion: 30);
       expect(result['success'], true);
       expect(result['data']['status'], 'DISPENSING');
       expect(result['message'], contains('đang cấp'));
@@ -134,7 +126,7 @@ void main() {
       });
       final api = ApiService.testing(client, baseUrl: 'http://test');
       await expectLater(
-        api.feedNow(portion: 30, override: false),
+        api.feedNow(portion: 30),
         throwsA(
           isA<FeedRequestException>()
               .having((e) => e.mayHaveBeenSent, 'may have been sent', false)
@@ -161,14 +153,11 @@ void main() {
             200,
           );
         }
-        if (req.url.path == '/api/history') {
-          return http.Response(jsonEncode({'commands': []}), 200);
-        }
         throw http.ClientException('Connection reset');
       });
       final api = ApiService.testing(client, baseUrl: 'http://test');
       await expectLater(
-        api.feedNow(portion: 30, override: false),
+        api.feedNow(portion: 30),
         throwsA(
           isA<FeedRequestException>()
               .having((e) => e.mayHaveBeenSent, 'may have been sent', true)
@@ -195,17 +184,15 @@ void main() {
           200,
         );
       }
-      if (req.url.path == '/api/history') {
+      if (req.url.path == '/api/commands/failed-id') {
         return http.Response(
           jsonEncode({
-            'commands': [
-              {
-                'command_id': 'failed-id',
-                'status': 'SENSOR_ERROR',
-                'error_code': 'WEIGHT_UNSTABLE',
-                'actual_weight_g': null,
-              },
-            ],
+            'data': {
+              'command_id': 'failed-id',
+              'status': 'SENSOR_ERROR',
+              'error_code': 'WEIGHT_UNSTABLE',
+              'actual_weight_g': null,
+            },
           }),
           200,
         );
@@ -213,7 +200,7 @@ void main() {
       throw http.ClientException('Lost feed response');
     });
     final api = ApiService.testing(client, baseUrl: 'http://test');
-    final result = await api.feedNow(portion: 30, override: false);
+    final result = await api.feedNow(portion: 30);
     expect(result['success'], false);
     expect(result['code'], 'WEIGHT_UNSTABLE');
     expect(result['data']['actual_weight_g'], isNull);
@@ -252,21 +239,21 @@ void main() {
             200,
           );
         }
-        if (req.url.path == '/api/history') {
-          return http.Response(jsonEncode({'commands': []}), 200);
+        if (req.url.path == '/api/commands/uncertain-id') {
+          return http.Response('{}', 404);
         }
-        sends++;
-        throw http.ClientException('Lost response');
+        if (req.url.path == '/api/feeding/feed') {
+          sends++;
+          throw http.ClientException('Lost response');
+        }
+        throw StateError('Unexpected ${req.url}');
       });
       final api = ApiService.testing(client, baseUrl: 'http://test');
       await expectLater(
-        api.feedNow(portion: 20, override: false),
+        api.feedNow(portion: 20),
         throwsA(isA<FeedRequestException>()),
       );
-      await expectLater(
-        api.feedNow(portion: 80, override: false),
-        throwsStateError,
-      );
+      await expectLater(api.feedNow(portion: 80), throwsStateError);
       expect(sends, 1);
     },
   );
