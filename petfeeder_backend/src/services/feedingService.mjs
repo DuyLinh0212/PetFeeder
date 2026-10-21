@@ -5,12 +5,24 @@ export class FeedingService {
   settings(){return {...defaults,...this.store.get('config')};}
   configure(patch){const next=config({...this.settings(),...object(patch)});schedules(this.store.get('schedules')||[],next);this.store.put('config','state',next);this.sync();return next;}
   setSchedules(items){schedules(items,this.settings());this.store.put('schedules','state',items);this.sync();return items;}
-  syncPayload(){const payload={config:this.settings(),schedules:this.store.get('schedules')||[]};return {...payload,version:createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0,16)};}
+  syncPayload(){const payload={config:this.settings(),schedules:this.store.get('schedules')||[]};return {...payload,version:createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0,16),server_time:this.clock()};}
   sync(){this.transport.send('sync',this.syncPayload());}
   feed(input){
     object(input);const old=this.store.get('commands',input.command_id);
     // Retry must preserve the original payload, including its original expiry.
-    if(old){if(!sameCommand(old,input)) throw new Invalid('COMMAND_ID_CONFLICT');return old;}
+    if(old){
+      if(!sameCommand(old,input)) throw new Invalid('COMMAND_ID_CONFLICT');
+      // DELIVERY_UNKNOWN means the device may have received the first publish,
+      // but its result did not reach the server. Re-send the exact same command
+      // so the device can return its durable result or safely reject the expiry.
+      if(old.status==='DELIVERY_UNKNOWN'){
+        const {command_id,source,target_portion_g,created_at,expires_at,override,retry_of}=old;
+        const payload={command_id,source,target_portion_g,created_at,expires_at,override,
+          ...(retry_of===undefined?{}:{retry_of})};
+        return {...old,delivery_attempted:this.transport.send('command',payload)};
+      }
+      return old;
+    }
     const c=command(input,this.settings(),this.clock());
     if(c.retry_of){
       const parent=this.store.get('commands',c.retry_of);
@@ -40,7 +52,10 @@ export class FeedingService {
     if(h.weight_g!==null)number(h.weight_g,0,5000,'weight_g');
     const previous=this.store.get('heartbeat');
     this.store.put('heartbeat','state',{...h,received_at:this.clock()});
-    if(!previous || previous.boot_id!==h.boot_id || this.clock()-previous.received_at>20 || h.config_version!==this.syncPayload().version)this.sync();
+    // Keep device skew well below the command's 10-second future-time tolerance.
+    const clockDrift=Number.isInteger(h.occurred_at)&&Math.abs(this.clock()-h.occurred_at)>3;
+    const hasConfigVersion=typeof h.config_version==='string'&&h.config_version.length>0;
+    if(!previous || previous.boot_id!==h.boot_id || this.clock()-previous.received_at>20 || (hasConfigVersion&&h.config_version!==this.syncPayload().version) || clockDrift)this.sync();
   }
   event(e){
     object(e);identifier(e.event_id,'event_id');identifier(e.status,'status');

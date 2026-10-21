@@ -2,6 +2,38 @@ import express from 'express';
 import {Invalid,object,number,identifier,dispensedStatuses} from '../domain/feedingPolicy.mjs';
 
 const dayNames=['CN','T2','T3','T4','T5','T6','T7'];
+const alertTitles={
+  REJECTED:'Không thể cho ăn',COMMAND_EXPIRED:'Lệnh đã hết hạn',BLOCKED_DUPLICATE:'Đã chặn lệnh gửi lặp',
+  TIME_INVALID:'Giờ thiết bị chưa đồng bộ',UNKNOWN_PET:'Chưa xác nhận thú cưng',UNVERIFIED:'Chưa xác nhận thức ăn',
+  COOLDOWN:'Đang trong thời gian chờ',DAILY_LIMIT:'Đã hết hạn mức thức ăn hôm nay',
+  DAILY_FEED_LIMIT:'Đã đạt số lần cho ăn tối đa',BOWL_FULL:'Bát đã gần đầy',BOWL_MISSING:'Không thấy bát thức ăn',
+  FOOD_EMPTY:'Hộp thức ăn đã hết',SENSOR_ERROR:'Cảm biến gặp sự cố',JAM_ERROR:'Thức ăn bị kẹt',
+  INTERRUPTED:'Phiên cấp bị gián đoạn',OVER_PORTION:'Lượng cấp vượt khẩu phần',PARTIAL:'Lượng cấp chưa đủ',
+  TIMEOUT:'Thiết bị chờ quá lâu',RECONCILIATION_REQUIRED:'Cần kiểm tra thiết bị',SAFETY_LOCKOUT:'Thiết bị đang khóa an toàn',
+  CONFIG_APPLIED:'Thiết bị đã đồng bộ cấu hình',MANUAL_REFILL:'Đã thêm thức ăn vào bát',WEIGHT_DECREASED:'Khối lượng bát đã giảm',
+  FOOD_LEFT:'Thức ăn còn trong bát',FOOD_STALE:'Thức ăn trong bát đã để lâu',MISSED_SCHEDULE:'Đã bỏ lỡ lịch cho ăn',
+};
+const alertMessages={
+  TIME_INVALID:'Giờ ESP32 đang chậm hoặc chưa đồng bộ với máy chủ. Nếu dùng Wokwi, đặt tốc độ mô phỏng về 100% rồi khởi động lại.',
+  BLOCKED_DUPLICATE:'Thiết bị đã nhận mã lệnh này trước đó và chặn lần gửi lại để tránh cấp thức ăn hai lần.',
+  UNKNOWN_PET:'Hãy xác nhận thú cưng trước khi cho ăn.',
+  UNVERIFIED:'Vào Cài đặt, nhập loại thức ăn và xác nhận đã kiểm tra.',
+  COOLDOWN:'Hãy đợi hết khoảng chờ bảo vệ rồi thử lại.',
+  DAILY_LIMIT:'Đã đạt tổng lượng thức ăn tối đa trong ngày.',
+  DAILY_FEED_LIMIT:'Đã đạt số bữa tối đa trong ngày.',
+  BOWL_FULL:'Bát không còn đủ chỗ cho khẩu phần mới.',
+  BOWL_MISSING:'Đặt bát lên cân và kiểm tra kết nối HX711.',
+  FOOD_EMPTY:'Hãy bổ sung thức ăn vào hộp.',
+  SENSOR_ERROR:'Kiểm tra cảm biến và chờ số đo ổn định.',
+  JAM_ERROR:'Kiểm tra đường trượt thức ăn và cơ cấu servo.',
+  RECONCILIATION_REQUIRED:'Kiểm tra thiết bị rồi xác nhận đã kiểm tra trước khi cho ăn tiếp.',
+  SAFETY_LOCKOUT:'Mở Cài đặt để kiểm tra trạng thái khóa an toàn.',
+  COMMAND_EXPIRED:'Lệnh đã hết hạn và không được thực hiện. Tạo yêu cầu mới sau khi kiểm tra trạng thái.',
+  OVER_PORTION:'Thiết bị đã dừng để tránh cấp thêm quá lượng đặt.',
+  PARTIAL:'Kiểm tra lượng thực cấp trước khi yêu cầu cấp bù.',
+  INTERRUPTED:'Kiểm tra bát và thiết bị trước khi tiếp tục.',
+  TIMEOUT:'Kiểm tra thiết bị và cân trước khi gửi yêu cầu khác.',
+};
 export function toSchedule(s,id){
   object(s);
   if(typeof s.time!=='string'||!/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time))throw new Invalid('INVALID_FIELD','time');
@@ -64,7 +96,15 @@ export function createApiRouter({db,service,clock,connected}){
       override:b.override,created_at:b.created_at,expires_at:b.expires_at,...(b.retry_of===undefined?{}:{retry_of:b.retry_of})};
     const result=service.feed(command);
     const rejected=result.status==='REJECTED'||result.status==='COMMAND_EXPIRED';
-    res.status(rejected?409:200).json({success:!rejected,code:result.error_code,message:rejected?result.error_code:'Đã nhận yêu cầu; chờ ESP32 xác nhận kết quả.',data:result});
+    const reason=result.error_code;
+    const explanation=alertMessages[reason]||'Hệ thống chưa thể thực hiện yêu cầu. Hãy kiểm tra thiết bị và thử lại sau.';
+    const message=result.status==='DELIVERY_UNKNOWN'
+      ?result.delivery_attempted
+        ?'Đã gửi lại đúng mã lệnh để thiết bị tra kết quả. Chưa xác nhận lượng thức ăn đã cấp.'
+        :'Chưa gửi lại được qua MQTT. Giữ nguyên mã lệnh và thử lại khi kết nối hoạt động.'
+      :rejected?`${explanation} (${reason})`:'Đã nhận yêu cầu; đang chờ ESP32 xác nhận kết quả.';
+    res.status(rejected?409:200).json({success:!rejected,code:reason,
+      message,data:result});
   });
   router.get('/feeding/history',(req,res)=>{
     const limit=req.query.limit===undefined?50:Number(req.query.limit);number(limit,1,200,'limit',true);
@@ -98,8 +138,11 @@ export function createApiRouter({db,service,clock,connected}){
   });
   function alerts(){
     const read=new Set(db.get('read_alerts')||[]),hidden=new Set(db.get('hidden_alerts')||[]);
-    const current=db.all('events').filter(e=>!['ACCEPTED','DISPENSING','SUCCESS','CONFIG_APPLIED'].includes(e.status)).map(e=>({
-      id:e.event_id,timestamp:new Date(e.occurred_at*1000).toISOString(),level:['JAM_ERROR','SENSOR_ERROR','INTERRUPTED'].includes(e.status)?'error':'warning',title:e.status,message:e.error_code||e.status,read:read.has(e.event_id)}));
+    const current=db.all('events').filter(e=>!['ACCEPTED','DISPENSING','SUCCESS','CONFIG_APPLIED','CLOCK_SYNCED'].includes(e.status)).map(e=>({
+      id:e.event_id,timestamp:new Date(e.occurred_at*1000).toISOString(),level:['JAM_ERROR','SENSOR_ERROR','INTERRUPTED','OVER_PORTION','TIMEOUT'].includes(e.status)?'error':'warning',
+      title:alertTitles[e.error_code]||alertTitles[e.status]||'Cảnh báo thiết bị',
+      message:`${alertMessages[e.error_code]||alertMessages[e.status]||'Thiết bị đã ghi nhận một sự kiện cần chú ý.'} (${e.error_code||e.status})`,
+      code:e.error_code||e.status,read:read.has(e.event_id)}));
     return [...current,...db.all('legacy_alerts').map(a=>({...a,read:a.read||read.has(a.id)}))]
       .filter(a=>!hidden.has(a.id)).sort((a,b)=>Date.parse(b.timestamp)-Date.parse(a.timestamp));
   }

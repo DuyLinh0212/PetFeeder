@@ -11,6 +11,7 @@
 #endif
 #include <HX711.h>
 #include <time.h>
+#include <sys/time.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -72,7 +73,7 @@ bool persist(){
   const size_t expected=measureJson(state),written=serializeJson(state,f);
   f.flush();f.close();
   if(written!=expected || !LittleFS.rename("/state.tmp","/state.json")){
-    servo(false);storageOK=false;Serial.println("STORAGE_ERROR: actuator locked");return false;
+    servo(false);storageOK=false;Serial.println("LỖI: Không lưu được trạng thái; đã khóa cơ cấu cấp để bảo vệ.");return false;
   }
   return true;
 }
@@ -133,6 +134,64 @@ bool numeric(JsonVariantConst v,float lo,float hi,bool integer=false){
   if(v.is<bool>()||!(v.is<int>()||v.is<long>()||v.is<float>()||v.is<double>()))return false;
   double n=v.as<double>();return isfinite(n)&&n>=lo&&n<=hi&&(!integer||floor(n)==n);
 }
+const char* statusVi(const char* status){
+  if(!strcmp(status,"ACCEPTED"))return "Thiết bị đã nhận lệnh";
+  if(!strcmp(status,"DISPENSING"))return "Đang cấp thức ăn";
+  if(!strcmp(status,"SUCCESS"))return "Đã cấp đủ khẩu phần";
+  if(!strcmp(status,"PARTIAL"))return "Đã cấp thiếu khẩu phần";
+  if(!strcmp(status,"OVER_PORTION"))return "Đã cấp vượt khẩu phần";
+  if(!strcmp(status,"REJECTED"))return "Thiết bị từ chối lệnh";
+  if(!strcmp(status,"COMMAND_EXPIRED"))return "Lệnh đã hết hạn";
+  if(!strcmp(status,"BLOCKED_DUPLICATE"))return "Đã chặn lệnh gửi lặp";
+  if(!strcmp(status,"CONFIG_APPLIED"))return "Đã nhận cấu hình mới";
+  if(!strcmp(status,"CLOCK_SYNCED"))return "Đã đồng bộ giờ từ máy chủ";
+  if(!strcmp(status,"TIME_INVALID"))return "Đồng hồ thiết bị chưa khớp giờ máy chủ";
+  if(!strcmp(status,"JAM_ERROR"))return "Phát hiện kẹt thức ăn";
+  if(!strcmp(status,"SENSOR_ERROR"))return "Cảm biến đang lỗi";
+  if(!strcmp(status,"INTERRUPTED"))return "Phiên cấp bị gián đoạn";
+  if(!strcmp(status,"MANUAL_REFILL"))return "Đã phát hiện thêm thức ăn vào bát";
+  if(!strcmp(status,"WEIGHT_DECREASED"))return "Khối lượng bát đã giảm";
+  if(!strcmp(status,"FOOD_LEFT"))return "Thức ăn vẫn còn trong bát";
+  if(!strcmp(status,"FOOD_STALE"))return "Thức ăn trong bát đã để lâu";
+  if(!strcmp(status,"MISSED_SCHEDULE"))return "Đã bỏ lỡ lịch cho ăn";
+  if(!strcmp(status,"RECONCILED"))return "Đã xác nhận kiểm tra thiết bị";
+  if(!strcmp(status,"OWNER_FOOD_CONFIRMED"))return "Chủ nuôi đã xác nhận loại thức ăn";
+  return "Thiết bị ghi nhận sự kiện";
+}
+const char* errorVi(const char* code){
+  if(!code)return nullptr;
+  if(!strcmp(code,"TIME_INVALID"))return "Giờ ESP32 đang lệch; kiểm tra đồng bộ NTP hoặc đặt Wokwi về tốc độ 100%";
+  if(!strcmp(code,"UNKNOWN_PET"))return "Chưa xác nhận thú cưng";
+  if(!strcmp(code,"UNVERIFIED"))return "Chưa xác nhận loại thức ăn trong Cài đặt";
+  if(!strcmp(code,"COOLDOWN"))return "Chưa hết khoảng chờ bảo vệ";
+  if(!strcmp(code,"DAILY_LIMIT"))return "Đã chạm giới hạn khối lượng trong ngày";
+  if(!strcmp(code,"DAILY_FEED_LIMIT"))return "Đã chạm số lần cho ăn tối đa trong ngày";
+  if(!strcmp(code,"BOWL_FULL"))return "Bát không còn đủ sức chứa";
+  if(!strcmp(code,"FOOD_EMPTY"))return "Hộp thức ăn gần hết hoặc đã hết";
+  if(!strcmp(code,"BOWL_MISSING"))return "Không phát hiện bát thức ăn";
+  if(!strcmp(code,"SENSOR_ERROR"))return "Không đọc được cảm biến hoặc cân chưa ổn định";
+  if(!strcmp(code,"BUSY"))return "Thiết bị đang thực hiện một phiên cấp khác";
+  if(!strcmp(code,"COMMAND_EXPIRED"))return "Lệnh đã quá hạn trước khi thiết bị xử lý";
+  if(!strcmp(code,"OVERRIDE_NOT_SUPPORTED"))return "Không hỗ trợ bỏ qua kiểm tra an toàn";
+  if(!strcmp(code,"COMMAND_ID_CONFLICT"))return "Mã lệnh cũ được gửi với nội dung khác";
+  if(!strcmp(code,"RECONCILIATION_REQUIRED"))return "Cần kiểm tra thiết bị trước khi tiếp tục";
+  if(!strcmp(code,"SAFETY_LOCKOUT"))return "Thiết bị đang khóa an toàn";
+  if(!strcmp(code,"INVALID_REMAINDER"))return "Khẩu phần cấp bù không hợp lệ";
+  if(!strcmp(code,"REMAINDER_ALREADY_REQUESTED"))return "Khẩu phần này đã có yêu cầu cấp bù";
+  if(!strcmp(code,"INVALID_FIELD"))return "Dữ liệu lệnh không hợp lệ";
+  if(!strcmp(code,"INVALID_CONFIG_OR_SCHEDULE"))return "Cấu hình hoặc lịch ăn không hợp lệ";
+  if(!strcmp(code,"CONFIG_BUSY"))return "Không thể đổi cấu hình khi thiết bị đang cấp thức ăn";
+  if(!strcmp(code,"OWNER_REFILL"))return "Đã ghi nhận chủ nuôi thêm thức ăn";
+  if(!strcmp(code,"UNKNOWN_CAUSE"))return "Chưa xác định nguyên nhân thay đổi khối lượng";
+  if(!strcmp(code,"DAILY_RESERVATION_RETAINED"))return "Hạn mức ngày vẫn được giữ để bảo vệ";
+  return "Xem mã lỗi để biết chi tiết";
+}
+void printEventVi(const char* status,JsonVariantConst command,const char* error){
+  Serial.printf("[SỰ KIỆN] %s (%s)",statusVi(status),status);
+  if(error){Serial.printf(" — %s (%s)",errorVi(error),error);}
+  if(numeric(command["target_portion_g"],0,500))Serial.printf(" — khẩu phần %.0f g",command["target_portion_g"].as<float>());
+  Serial.println();
+}
 bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantConst actual=JsonVariantConst(),const char* error=nullptr){
   if(strcmp(status,"ACCEPTED")&&strcmp(status,"DISPENSING"))uiStatus=error?error:status;
   if(state["events"].size()>=MAX_EVENTS){servo(false);state["locked"]=true;persist();return false;}
@@ -148,7 +207,8 @@ bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantCo
     e["actual_weight_g"].set(actual);
   }
   if(error)e["error_code"]=error;
-  String line;serializeJson(e,line);Serial.println(line);
+  // The wire event stays JSON for MQTT; Serial Monitor is for people and uses Vietnamese.
+  printEventVi(status,c,error);
   return persist();
 }
 void event(const char* status,const char* error=nullptr){emit(status,JsonVariantConst(),JsonVariantConst(),error);}
@@ -277,8 +337,17 @@ void callback(char* topic,byte* payload,unsigned int length){
   }
   if(t==root+"/command"){receive(d.as<JsonVariantConst>());return;}
   if(t==root+"/sync"){
+    if(numeric(d["server_time"],1700000000,4102444800.0,true)){
+      const long serverTime=d["server_time"].as<long>();
+      if(!validTime()||labs(nowSec()-serverTime)>2){
+        timeval corrected{};corrected.tv_sec=serverTime;
+        if(settimeofday(&corrected,nullptr)==0)event("CLOCK_SYNCED");
+      }
+    }
     if(!configValid(d["config"])||!scheduleValid(d["schedules"],d["config"]["max_portion_g"].as<float>())){event("REJECTED","INVALID_CONFIG_OR_SCHEDULE");return;}
     if(busy){if(d["config"]["lockdown"].as<bool>()){cfg()["lockdown"]=true;persist();}event("REJECTED","CONFIG_BUSY");return;}
+    const String incomingVersion=d["version"].as<String>();
+    if(incomingVersion.length()&&state["config_version"].as<String>()==incomingVersion)return;
     // Keep last_scan/runs and daily reservation. A config sync never resets execution marks.
     state["config"].set(d["config"]);state["schedules"].set(d["schedules"]);state["config_version"]=d["version"];persist();event("CONFIG_APPLIED");
   }
@@ -321,18 +390,18 @@ void heartbeat(){
 void serialCommand(String line){
   line.trim();
 #if WOKWI_SIM
-  if((line=="sim auto"||line=="sim manual")&&!busy){simAuto=line=="sim auto";state["sim_auto"]=simAuto;persist();Serial.println(simAuto?"DEMO_AUTO: synthetic dispense, not measured food":"HX711_MANUAL: change HX711 and HC-SR04 by hand");return;}
+  if((line=="sim auto"||line=="sim manual")&&!busy){simAuto=line=="sim auto";state["sim_auto"]=simAuto;persist();Serial.println(simAuto?"MÔ PHỎNG: tự thay đổi số cân; đây không phải lượng thức ăn đo thật.":"CẢM BIẾN THẬT: thay đổi HX711 và HC-SR04 bằng tay trong Wokwi.");return;}
   if((line=="sim jam on"||line=="sim jam off")&&!busy){simJam=line=="sim jam on";return;}
   if(line=="sim empty"&&!busy&&simAuto){state["sim_bowl_g"]=0;persist();return;}
 #endif
-  if(line=="status"){heartbeat();Serial.printf("weight=%.1fg calibrated=%d time_valid=%d busy=%d wifi=%d mqtt=%d mqtt_state=%d\n",weightG,state["calibrated"].as<bool>(),validTime(),busy,WiFi.status()==WL_CONNECTED,mqtt.connected(),mqtt.state());}
-  else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("CALIBRATED: empty bowl offset saved");}
-  else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Now run tare EMPTY with empty bowl");}}
+  if(line=="status"){heartbeat();Serial.printf("Trạng thái: cân=%.1f g | đã cân chỉnh=%s | giờ hợp lệ=%s | đang cấp=%s | Wi-Fi=%s | MQTT=%s | mã MQTT=%d\n",weightG,state["calibrated"].as<bool>()?"có":"không",validTime()?"có":"không",busy?"có":"không",WiFi.status()==WL_CONNECTED?"đã nối":"mất kết nối",mqtt.connected()?"đã nối":"mất kết nối",mqtt.state());}
+  else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("ĐÃ CÂN CHỈNH: đã lưu mức cân khi bát rỗng.");}
+  else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Hãy đặt bát rỗng rồi nhập tare EMPTY để cân chỉnh.");}}
   else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
     state["locked"]=false;state["last_end"]=nowSec();persist();event("RECONCILED","DAILY_RESERVATION_RETAINED");}
   else if(line=="food CONFIRMED"&&!busy){cfg()["food_confirmed"]=true;cfg()["food_label"]="Chu xac nhan qua Serial";persist();event("OWNER_FOOD_CONFIRMED");}
   else if(line.startsWith("{")){JsonDocument d;if(!deserializeJson(d,line))receive(d.as<JsonVariantConst>());else event("REJECTED","INVALID_JSON");}
-  else Serial.println("Commands: status | food CONFIRMED | tare EMPTY | factor N | reconcile CHECKED | JSON command");
+  else Serial.println("Lệnh: status | food CONFIRMED | tare EMPTY | factor N | reconcile CHECKED | hoặc dán lệnh JSON");
 }
 void setup(){
   Serial.begin(115200);bootId=id();ledcSetup(0,50,16);ledcAttachPin(SERVO_PIN,0);servo(false);
@@ -344,14 +413,14 @@ void setup(){
   // Existing data and real hardware must never be formatted on a mount failure.
 #if WOKWI_SIM
   if(blankSimulationStorage()){
-    Serial.println("WOKWI: initializing blank simulation storage");
+    Serial.println("Wokwi: đang khởi tạo bộ nhớ mô phỏng còn trống.");
     storageOK=esp_littlefs_format("spiffs")==ESP_OK&&LittleFS.begin(false);
   }else
 #endif
   storageOK=LittleFS.begin(false);
-  if(!storageOK){Serial.println("STORAGE_NOT_INITIALIZED: send INIT_NEW_DEVICE to format ONLY a new empty device");}
+  if(!storageOK){Serial.println("LỖI BỘ NHỚ: thiết bị đang khóa. Chỉ nhập INIT_NEW_DEVICE nếu đây là thiết bị mới, bộ nhớ chưa có dữ liệu.");}
   if(storageOK&&LittleFS.exists("/state.json")){
-    File f=LittleFS.open("/state.json","r");if(deserializeJson(state,f)){storageOK=false;Serial.println("STORAGE_CORRUPT: locked");}f.close();
+    File f=LittleFS.open("/state.json","r");if(deserializeJson(state,f)){storageOK=false;Serial.println("LỖI BỘ NHỚ: dữ liệu trạng thái bị hỏng; đã khóa cơ cấu cấp.");}f.close();
   }else if(storageOK){defaults();persist();}
   if(storageOK){
     // Upgrade older Long state without resetting calibration, schedules or safety totals.
@@ -376,8 +445,8 @@ void setup(){
 #endif
   busy=false;WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
   mqtt.setServer(MQTT_HOST,MQTT_PORT);mqtt.setCallback(callback);mqtt.setBufferSize(8192);mqtt.setSocketTimeout(1);mqtt.setKeepAlive(60);
-  Serial.printf("WiFi: auto-connect Wokwi-GUEST; MQTT: auto-connect %s:%d\n",MQTT_HOST,MQTT_PORT);
-  Serial.println("PetFeeder ready. Serial: status | sim manual | sim auto | sim jam on/off | sim empty. HX711 never tares on boot.");
+  Serial.printf("Đang kết nối Wi-Fi Wokwi-GUEST và MQTT %s:%d.\n",MQTT_HOST,MQTT_PORT);
+  Serial.println("PetFeeder đã sẵn sàng. Lệnh: status | sim manual | sim auto | sim jam on/off | sim empty. Cân HX711 không tự chỉnh về 0 khi khởi động.");
 }
 void loop(){
   while(Serial.available()){
@@ -389,7 +458,7 @@ void loop(){
 #if WOKWI_SIM
         simAuto=true;
 #endif
-        Serial.println("INITIALIZED; new device only");}
+        Serial.println("ĐÃ KHỞI TẠO: chỉ dùng cho thiết bị mới chưa có dữ liệu.");}
       }else if(storageOK)serialCommand(serialLine);serialLine="";
     }else if(c=='\b'||c==127){
       if(serialLine.length()){serialLine.remove(serialLine.length()-1);Serial.print("\b \b");}
@@ -416,7 +485,7 @@ void loop(){
       if(busy&&motorOpen&&!simJam&&ms-servoAt>=(finePulse?150:cf("pulse_step_ms")-50)){
         float remaining=state["active"]["target_portion_g"].as<float>()-(state["sim_bowl_g"].as<float>()-state["active"]["baseline"].as<float>());
         float gain=max(0.0f,min(finePulse?2.5f:5.0f,min(remaining,state["sim_hopper_g"].as<float>())));
-        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=state["sim_hopper_g"].as<float>()-gain;servo(false);persist();Serial.printf("[DEMO_AUTO] Synthetic pulse +%.1fg\n",gain);}
+        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=state["sim_hopper_g"].as<float>()-gain;servo(false);persist();Serial.printf("MÔ PHỎNG: lượng cân tăng %.1f g (số liệu giả lập).\n",gain);}
       }
       float w=state["sim_bowl_g"].as<float>();weightOK=isfinite(w);bowlMissing=false;weightG=w;
       trackWeight(ms);
@@ -453,7 +522,7 @@ void loop(){
       }else if(motorOpen){
         if(ms-servoAt>=(finePulse?200:cf("pulse_step_ms"))){servo(false);servoAt=ms;}
       }else if(ms-servoAt>=600&&ms-stableAt>=700){
-          if(weightG-pulseBaseline<1){jamRetries++;antiStep=1;antiAt=ms;antiServo(45);servoAngle(120);toneNotice(200);Serial.printf("[ANTI-JAM] recovery %d/3\n",jamRetries);}
+          if(weightG-pulseBaseline<1){jamRetries++;antiStep=1;antiAt=ms;antiServo(45);servoAngle(120);toneNotice(200);Serial.printf("CHỐNG KẸT: đang thử thông đường cấp lần %d/3.\n",jamRetries);}
           else{jamRetries=0;finePulse=target-actual<=cf("coarse_fine_threshold_g");pulseCount++;servo(true);}
           pulseBaseline=weightG;
         servoAt=ms;
@@ -463,7 +532,7 @@ void loop(){
   if(WiFi.status()==WL_CONNECTED){
     if(!mqtt.connected()&&!busy&&ms-connectAt>=3000){connectAt=ms;
       if(mqtt.connect((String("esp-")+DEVICE_ID).c_str(),MQTT_USER,MQTT_PASS)){
-        Serial.printf("MQTT_CONNECTED: %s:%d\n",MQTT_HOST,MQTT_PORT);
+        Serial.printf("Đã kết nối MQTT tới %s:%d.\n",MQTT_HOST,MQTT_PORT);
         mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);heartbeat();
       }
     }

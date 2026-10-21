@@ -35,14 +35,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
       if (!mounted) return;
       if (result['success'] == true) {
-        showFeedback(context, result['message'] as String);
+        showFeedback(
+          context,
+          result['message'] as String,
+          error: result['code'] == 'AWAITING_DEVICE_RESULT',
+        );
         await widget.onRefresh();
       }
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         showFeedback(
           context,
-          'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã nếu đã gửi lệnh.',
+          error is StateError
+              ? error.message.toString()
+              : 'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã nếu đã gửi lệnh.',
           error: true,
         );
       }
@@ -87,6 +93,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   String _systemLabel(String value) => switch (value.toUpperCase()) {
+    'CONFIG_APPLIED' => 'Đã đồng bộ cấu hình',
+    'CLOCK_SYNCED' => 'Đã đồng bộ giờ thiết bị',
+    'TIME_INVALID' => 'Giờ thiết bị chưa đồng bộ',
+    'DELIVERY_UNKNOWN' => 'Đang chờ thiết bị xác nhận kết quả',
     'SAN SANG' => 'Sẵn sàng cho bữa ăn',
     'DANG CHO AN' || 'DANG CHO AN...' => 'Đang cấp thức ăn',
     'HOAN TAT' || 'HOAN TAT!' => 'Đã hoàn tất bữa ăn',
