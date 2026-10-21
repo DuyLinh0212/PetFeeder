@@ -16,40 +16,40 @@
     --color-surface-container: #eceef0;
     --color-surface-container-high: #e6e8ea;
     --color-surface-container-highest: #e0e3e5;
-
+    
     --color-on-surface: #191c1e;
     --color-on-surface-variant: #424754;
     --color-inverse-surface: #2d3133;
     --color-inverse-on-surface: #eff1f3;
-
+    
     --color-outline: #727785;
     --color-outline-variant: #c2c6d6;
     --color-surface-tint: #005ac2;
-
+    
     --color-primary: #3b82f6;
     --color-on-primary: #ffffff;
     --color-primary-container: #2170e4;
     --color-on-primary-container: #fefcff;
     --color-inverse-primary: #adc6ff;
-
+    
     --color-secondary: #505f76;
     --color-on-secondary: #ffffff;
     --color-secondary-container: #d0e1fb;
     --color-on-secondary-container: #54647a;
-
+    
     --color-tertiary: #006947;
     --color-on-tertiary: #ffffff;
     --color-tertiary-container: #00855b;
     --color-on-tertiary-container: #f5fff6;
-
+    
     --color-error: #ba1a1a;
     --color-on-error: #ffffff;
     --color-error-container: #ffdad6;
     --color-on-error-container: #93000a;
-
+    
     /* Brand & styling specifications */
     --brand-primary: #3b82f6; /* As referenced in Brand & Style description */
-
+    
     /* Rounded corners */
     --rounded-sm: 0.125rem;    /* 2px */
     --rounded-default: 0.25rem; /* 4px */
@@ -57,7 +57,7 @@
     --rounded-lg: 0.5rem;       /* 8px */
     --rounded-xl: 0.75rem;      /* 12px */
     --rounded-full: 9999px;
-
+    
     /* Spacing */
     --space-base: 8px;
     --space-xs: 4px;
@@ -66,7 +66,7 @@
     --space-lg: 48px;
     --space-xl: 80px;
     --max-width: 1280px;
-
+    
     /* Animation */
     --transition-fast: 0.15s ease;
     --transition-normal: 0.25s ease;
@@ -991,11 +991,11 @@ header {
     .main-grid {
         grid-template-columns: 1fr;
     }
-
+    
     .sidebar {
         order: 2;
     }
-
+    
     .workspace {
         order: 1;
     }
@@ -1005,19 +1005,19 @@ header {
     .workbench-layout {
         grid-template-columns: 1fr;
     }
-
+    
     .preview-container {
         min-height: 250px;
     }
-
+    
     .preview-image {
         max-height: 240px;
     }
-
+    
     h1, .display-lg {
         font-size: 32px;
     }
-
+    
     .header-title-group h1 {
         font-size: 22px;
     }
