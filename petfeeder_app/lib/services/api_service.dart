@@ -8,7 +8,7 @@ class ApiService {
   factory ApiService() => _instance;
   ApiService._internal();
 
-  // Mặc định: 
+  // Mặc định:
   // http://10.0.2.2:3000 khi chạy trên Android Emulator
   // http://localhost:3000 khi chạy trên Windows / Web
   // Có thể đổi thành IP LAN máy tính khi chạy trên điện thoại thật (vd: http://192.168.1.15:3000)
@@ -23,8 +23,8 @@ class ApiService {
   }
 
   // 1. Lấy trạng thái thiết bị (FR-05, FR-06)
-  Future<DeviceStatus> getDeviceStatus() async {
-    final uri = Uri.parse('$baseUrl/api/device/status');
+  Future<DeviceStatus> getDeviceStatus({String? serverUrl}) async {
+    final uri = Uri.parse('${serverUrl ?? baseUrl}/api/device/status');
     final res = await http.get(uri).timeout(const Duration(seconds: 4));
     if (res.statusCode == 200) {
       final data = jsonDecode(utf8.decode(res.bodyBytes));
@@ -40,14 +40,13 @@ class ApiService {
     required bool override,
   }) async {
     final uri = Uri.parse('$baseUrl/api/feeding/feed');
-    final res = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'portion': portion,
-        'override': override,
-      }),
-    ).timeout(const Duration(seconds: 5));
+    final res = await http
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'portion': portion, 'override': override}),
+        )
+        .timeout(const Duration(seconds: 5));
 
     final data = jsonDecode(utf8.decode(res.bodyBytes));
     if (res.statusCode == 200) {
@@ -57,14 +56,16 @@ class ApiService {
       return {
         'success': false,
         'code': 'BLOCKED_DUPLICATE',
-        'message': data['message'] ?? 'Lệnh cho ăn bị từ chối do trùng thời gian!',
-        'remaining_sec': data['remaining_sec'] ?? 0
+        'message':
+            data['message'] ?? 'Lệnh cho ăn bị từ chối do trùng thời gian!',
+        'remaining_sec': data['remaining_sec'] ?? 0,
       };
     } else {
       return {
         'success': false,
         'code': data['code'] ?? 'ERROR',
-        'message': data['message'] ?? 'Lỗi khi gửi lệnh cho ăn (${res.statusCode})'
+        'message':
+            data['message'] ?? 'Lỗi khi gửi lệnh cho ăn (${res.statusCode})',
       };
     }
   }
@@ -89,17 +90,19 @@ class ApiService {
     required bool enabled,
   }) async {
     final uri = Uri.parse('$baseUrl/api/schedules');
-    final res = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'name': name,
-        'time': time,
-        'portion_g': portionG,
-        'days': days,
-        'enabled': enabled,
-      }),
-    );
+    final res = await http
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'name': name,
+            'time': time,
+            'portion_g': portionG,
+            'days': days,
+            'enabled': enabled,
+          }),
+        )
+        .timeout(const Duration(seconds: 8));
     if (res.statusCode == 201) {
       final data = jsonDecode(utf8.decode(res.bodyBytes));
       return FeedingSchedule.fromJson(data['data']);
@@ -110,7 +113,7 @@ class ApiService {
 
   Future<FeedingSchedule> toggleSchedule(String id) async {
     final uri = Uri.parse('$baseUrl/api/schedules/$id/toggle');
-    final res = await http.patch(uri);
+    final res = await http.patch(uri).timeout(const Duration(seconds: 8));
     if (res.statusCode == 200) {
       final data = jsonDecode(utf8.decode(res.bodyBytes));
       return FeedingSchedule.fromJson(data['data']);
@@ -120,7 +123,7 @@ class ApiService {
 
   Future<bool> deleteSchedule(String id) async {
     final uri = Uri.parse('$baseUrl/api/schedules/$id');
-    final res = await http.delete(uri);
+    final res = await http.delete(uri).timeout(const Duration(seconds: 8));
     return res.statusCode == 200;
   }
 
@@ -138,7 +141,7 @@ class ApiService {
 
   Future<bool> clearHistory() async {
     final uri = Uri.parse('$baseUrl/api/feeding/history');
-    final res = await http.delete(uri);
+    final res = await http.delete(uri).timeout(const Duration(seconds: 8));
     return res.statusCode == 200;
   }
 
@@ -156,13 +159,13 @@ class ApiService {
 
   Future<bool> markNotificationRead(String id) async {
     final uri = Uri.parse('$baseUrl/api/notifications/$id/read');
-    final res = await http.patch(uri);
+    final res = await http.patch(uri).timeout(const Duration(seconds: 8));
     return res.statusCode == 200;
   }
 
   Future<bool> clearNotifications() async {
     final uri = Uri.parse('$baseUrl/api/notifications');
-    final res = await http.delete(uri);
+    final res = await http.delete(uri).timeout(const Duration(seconds: 8));
     return res.statusCode == 200;
   }
 }
