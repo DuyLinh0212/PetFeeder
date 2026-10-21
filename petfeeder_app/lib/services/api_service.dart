@@ -1,8 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import '../models/models.dart';
+
+class FeedRequestException implements Exception {
+  final String message;
+  final bool mayHaveBeenSent;
+  const FeedRequestException(this.message, {required this.mayHaveBeenSent});
+
+  @override
+  String toString() => message;
+}
 
 class ApiService {
   // Singleton pattern
@@ -102,83 +112,202 @@ class ApiService {
     bool retry = false,
     String? retryOf,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    final key = 'pending_feed:$baseUrl';
-    final saved = prefs.getString(key);
-    Map<String, dynamic>? command = saved == null
-        ? null
-        : Map<String, dynamic>.from(jsonDecode(saved));
-    if (retry && command == null) {
-      throw Exception('Chưa có yêu cầu đã lưu để gửi lại.');
-    }
-    if (!retry && command != null) {
-      final res = await _get(
-        Uri.parse('$baseUrl/api/history'),
-      ).timeout(const Duration(seconds: 4));
-      if (res.statusCode != 200) {
-        throw Exception(
-          'Chưa xác định kết quả yêu cầu trước; dùng Gửi lại cùng mã.',
-        );
+    final server = baseUrl;
+    var stage = 'đọc yêu cầu đã lưu';
+    var submitted = false;
+    Map<String, dynamic>? command;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'pending_feed:$server';
+      final saved = prefs.getString(key);
+      command = saved == null ? null : _feedBody(saved);
+      if (retry && command == null) {
+        throw StateError('Chưa có yêu cầu đã lưu để gửi lại.');
       }
-      final rows = jsonDecode(utf8.decode(res.bodyBytes))['commands'] as List;
+      if (!retry && command != null) {
+        stage = 'đọc kết quả yêu cầu trước';
+        final res = await _get(
+          Uri.parse('$server/api/history'),
+        ).timeout(const Duration(seconds: 4));
+        if (res.statusCode != 200) {
+          throw FeedRequestException(
+            'Không đọc được kết quả yêu cầu trước (HTTP ${res.statusCode}). Giữ nguyên mã lệnh và thử lại khi kết nối hoạt động.',
+            mayHaveBeenSent: false,
+          );
+        }
+        final rows = _feedBody(utf8.decode(res.bodyBytes))['commands'];
+        if (rows is! List) throw const FormatException('Missing commands');
+        final previous = rows
+            .whereType<Map>()
+            .where((r) => r['command_id'] == command!['command_id'])
+            .firstOrNull;
+        const terminal = {
+          'SUCCESS',
+          'PARTIAL',
+          'OVER_PORTION',
+          'REJECTED',
+          'COMMAND_EXPIRED',
+          'SENSOR_ERROR',
+          'JAM_ERROR',
+          'TIMEOUT',
+          'FOOD_EMPTY',
+          'INTERRUPTED',
+        };
+        if (previous != null && terminal.contains(previous['status'])) {
+          command = null;
+        }
+        if (command != null) {
+          throw StateError(
+            'Chưa rõ kết quả yêu cầu trước. Dùng Gửi lại cùng mã.',
+          );
+        }
+        // A new command is allowed only after the previous result is terminal.
+      }
+      if (command == null) {
+        stage = 'tạo mã yêu cầu';
+        final res = await _get(
+          Uri.parse('$server/api/id'),
+        ).timeout(const Duration(seconds: 4));
+        if (res.statusCode != 200) {
+          throw FeedRequestException(
+            'Không tạo được mã yêu cầu trên máy chủ (HTTP ${res.statusCode}). Chưa gửi lệnh cho ăn; kiểm tra địa chỉ và phiên bản backend.',
+            mayHaveBeenSent: false,
+          );
+        }
+        final id = _feedBody(utf8.decode(res.bodyBytes));
+        if (id['command_id'] is! String ||
+            (id['command_id'] as String).isEmpty ||
+            id['now'] is! int ||
+            id['ttl_s'] is! int) {
+          throw const FormatException('Invalid command ID response');
+        }
+        command = {
+          'command_id': id['command_id'],
+          'created_at': id['now'],
+          'expires_at': id['now'] + id['ttl_s'],
+          'portion': portion,
+          'override': override,
+          'retry_of': ?retryOf,
+        };
+        stage = 'lưu mã yêu cầu trên điện thoại';
+        if (!await prefs.setString(key, jsonEncode(command))) {
+          throw StateError(
+            'Không lưu được mã trên điện thoại. Chưa gửi lệnh cho ăn.',
+          );
+        }
+      }
+      stage = 'gửi lệnh cho ăn';
+      submitted = true;
+      final res = await _post(
+        Uri.parse('$server/api/feeding/feed'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(command),
+      ).timeout(const Duration(seconds: 5));
+      final data = _feedBody(utf8.decode(res.bodyBytes));
+      if (res.statusCode == 200 && data['success'] is! bool) {
+        throw const FormatException('Invalid feeding response');
+      }
+      if (res.statusCode == 400 && data['code'] != 'COMMAND_ID_CONFLICT') {
+        await prefs.remove(key);
+      }
+      return {
+        'success': res.statusCode == 200 && data['success'] == true,
+        'code': data['code'],
+        'message': data['message'] ?? 'Chờ xác nhận thiết bị',
+        'data': data['data'],
+      };
+    } on StateError {
+      rethrow;
+    } on FeedRequestException {
+      rethrow;
+    } catch (error) {
+      debugPrint('PetFeeder: lỗi khi $stage: $error');
+      final submittedId = command?['command_id'];
+      if (submitted && submittedId is String) {
+        // Query only: a lost HTTP response must never cause another feed POST.
+        final recovered = await _recoverFeed(server, submittedId);
+        if (recovered != null) return recovered;
+      }
+      final reason = error is TimeoutException
+          ? 'Máy chủ phản hồi quá chậm khi $stage.'
+          : error is http.ClientException
+          ? 'Mất kết nối với máy chủ khi $stage.'
+          : error is FormatException
+          ? 'Dữ liệu không hợp lệ khi $stage. Kiểm tra phiên bản app và backend.'
+          : 'Không thể $stage.';
+      throw FeedRequestException(
+        '$reason ${submitted ? 'Chưa rõ lệnh đã tới thiết bị. Dùng Gửi lại cùng mã để tra kết quả.' : 'Chưa gửi lệnh cho ăn mới.'}',
+        mayHaveBeenSent: submitted,
+      );
+    }
+  }
+
+  Map<String, dynamic> _feedBody(String body) {
+    final value = jsonDecode(body);
+    if (value is! Map<String, dynamic>) {
+      throw const FormatException('Expected a JSON object');
+    }
+    return value;
+  }
+
+  Future<Map<String, dynamic>?> _recoverFeed(
+    String server,
+    String commandId,
+  ) async {
+    try {
+      final res = await _get(
+        Uri.parse('$server/api/history'),
+      ).timeout(const Duration(seconds: 4));
+      if (res.statusCode != 200) return null;
+      final rows = _feedBody(utf8.decode(res.bodyBytes))['commands'];
+      if (rows is! List) return null;
       final previous = rows
-          .where((r) => r['command_id'] == command!['command_id'])
+          .whereType<Map>()
+          .where((row) => row['command_id'] == commandId)
           .firstOrNull;
-      const terminal = {
-        'SUCCESS',
-        'PARTIAL',
-        'OVER_PORTION',
-        'REJECTED',
-        'COMMAND_EXPIRED',
-        'SENSOR_ERROR',
-        'JAM_ERROR',
-        'TIMEOUT',
-        'FOOD_EMPTY',
-        'INTERRUPTED',
+      if (previous == null) return null;
+      final status = previous['status'];
+      final message = switch (status) {
+        'QUEUED' => 'Máy chủ đã nhận yêu cầu; đang chờ thiết bị xác nhận.',
+        'ACCEPTED' => 'Thiết bị đã nhận yêu cầu; đang chuẩn bị cấp thức ăn.',
+        'DISPENSING' => 'Thiết bị đang cấp khẩu phần đã yêu cầu.',
+        'SUCCESS' =>
+          'Thiết bị đã xác nhận hoàn tất phiên cấp. Xem lượng đã cấp trong Nhật ký.',
+        'DELIVERY_UNKNOWN' =>
+          'Máy chủ đã nhận yêu cầu nhưng chưa có kết quả từ thiết bị. Dùng Gửi lại cùng mã.',
+        'COMMAND_EXPIRED' =>
+          'Yêu cầu đã hết hạn; thiết bị không thực hiện lệnh này.',
+        'SENSOR_ERROR' =>
+          'Thiết bị đã dừng vì lỗi cảm biến. Kiểm tra thiết bị và lượng thức ăn trong bát trước khi cấp tiếp.',
+        'REJECTED' => 'Thiết bị đã từ chối yêu cầu. Xem lý do trong Nhật ký.',
+        'PARTIAL' ||
+        'JAM_ERROR' ||
+        'TIMEOUT' ||
+        'FOOD_EMPTY' ||
+        'INTERRUPTED' ||
+        'OVER_PORTION' =>
+          'Phiên cấp đã dừng. Kiểm tra lượng đã cấp và nguyên nhân trong Nhật ký.',
+        _ => null,
       };
-      if (previous != null && terminal.contains(previous['status'])) {
-        command = null;
-      }
-      if (command != null) {
-        throw StateError(
-          'Chưa rõ kết quả yêu cầu trước. Dùng Gửi lại cùng mã.',
-        );
-      }
-      // A new command is allowed only after the previous result is terminal.
-    }
-    if (command == null) {
-      final res = await _get(
-        Uri.parse('$baseUrl/api/id'),
-      ).timeout(const Duration(seconds: 4));
-      if (res.statusCode != 200) throw Exception('Không tạo được mã yêu cầu');
-      final id = jsonDecode(utf8.decode(res.bodyBytes));
-      command = {
-        'command_id': id['command_id'],
-        'created_at': id['now'],
-        'expires_at': id['now'] + id['ttl_s'],
-        'portion': portion,
-        'override': override,
-        'retry_of': ?retryOf,
+      if (message == null) return null;
+      return {
+        'success': const {
+          'QUEUED',
+          'ACCEPTED',
+          'DISPENSING',
+          'SUCCESS',
+          'DELIVERY_UNKNOWN',
+        }.contains(status),
+        'code': status == 'DELIVERY_UNKNOWN'
+            ? 'AWAITING_DEVICE_RESULT'
+            : previous['error_code'],
+        'message': message,
+        'data': Map<String, dynamic>.from(previous),
       };
-      if (!await prefs.setString(key, jsonEncode(command))) {
-        throw Exception('Không lưu được mã; chưa gửi lệnh.');
-      }
+    } catch (_) {
+      // Keep the saved payload when both the reply and the lookup are unavailable.
+      return null;
     }
-    final res = await _post(
-      Uri.parse('$baseUrl/api/feeding/feed'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(command),
-    ).timeout(const Duration(seconds: 5));
-    final data = jsonDecode(utf8.decode(res.bodyBytes));
-    if (res.statusCode == 400 && data['code'] != 'COMMAND_ID_CONFLICT') {
-      await prefs.remove(key);
-    }
-    return {
-      'success': res.statusCode == 200 && data['success'] == true,
-      'code': data['code'],
-      'message': data['message'] ?? 'Chờ xác nhận thiết bị',
-      'data': data['data'],
-    };
   }
 
   // 3. Quản lý lịch (FR-01, FR-02)

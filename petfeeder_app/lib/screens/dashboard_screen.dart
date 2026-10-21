@@ -46,7 +46,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         showFeedback(
           context,
-          error is StateError
+          error is FeedRequestException
+              ? error.message
+              : error is StateError
               ? error.message.toString()
               : 'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã nếu đã gửi lệnh.',
           error: true,
@@ -92,7 +94,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return 'Lần gần nhất: $time · ${status.lastFeedPortionG.toStringAsFixed(0)} g';
   }
 
-  String _systemLabel(String value) => switch (value.toUpperCase()) {
+  String _systemLabel(String value) => switch (value.trim().toUpperCase()) {
     'CONFIG_APPLIED' => 'Đã đồng bộ cấu hình',
     'CLOCK_SYNCED' => 'Đã đồng bộ giờ thiết bị',
     'TIME_INVALID' => 'Giờ thiết bị chưa đồng bộ',

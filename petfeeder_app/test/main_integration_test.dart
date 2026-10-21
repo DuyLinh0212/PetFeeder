@@ -44,7 +44,7 @@ void main() {
       final first = ApiService.testing(client, baseUrl: 'http://test');
       await expectLater(
         first.feedNow(portion: 20, override: false),
-        throwsA(isA<http.ClientException>()),
+        throwsA(isA<FeedRequestException>()),
       );
       final reopened = ApiService.testing(client, baseUrl: 'http://test');
       await reopened.feedNow(portion: 80, override: false, retry: true);
@@ -66,6 +66,158 @@ void main() {
       'bowl_weight_g': null,
     });
     expect(device.bowlWeightG, isNull);
+  });
+
+  test(
+    'lost feed response is reconciled without sending another command',
+    () async {
+      var sends = 0;
+      var ids = 0;
+      final client = MockClient((req) async {
+        if (req.url.path == '/api/id') {
+          ids++;
+          return http.Response(
+            jsonEncode({
+              'command_id': 'received-id',
+              'now': 1792500000,
+              'ttl_s': 60,
+            }),
+            200,
+          );
+        }
+        if (req.url.path == '/api/feeding/feed') {
+          sends++;
+          throw http.ClientException('Response lost after server committed');
+        }
+        if (req.url.path == '/api/history') {
+          return http.Response(
+            jsonEncode({
+              'commands': [
+                {
+                  'command_id': 'received-id',
+                  'status': 'DISPENSING',
+                  'target_portion_g': 30,
+                  'actual_weight_g': 0,
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        throw StateError('Unexpected ${req.url}');
+      });
+      final api = ApiService.testing(client, baseUrl: 'http://test');
+      final result = await api.feedNow(portion: 30, override: false);
+      expect(result['success'], true);
+      expect(result['data']['status'], 'DISPENSING');
+      expect(result['message'], contains('đang cấp'));
+      expect(sends, 1);
+      expect(ids, 1);
+      final prefs = await SharedPreferences.getInstance();
+      expect(
+        jsonDecode(prefs.getString('pending_feed:http://test')!)['command_id'],
+        'received-id',
+      );
+    },
+  );
+
+  test(
+    'incompatible ID endpoint fails before submitting or saving a command',
+    () async {
+      var sends = 0;
+      final client = MockClient((req) async {
+        if (req.url.path == '/api/id') {
+          return http.Response('<html>Not found</html>', 404);
+        }
+        sends++;
+        return http.Response('{}', 200);
+      });
+      final api = ApiService.testing(client, baseUrl: 'http://test');
+      await expectLater(
+        api.feedNow(portion: 30, override: false),
+        throwsA(
+          isA<FeedRequestException>()
+              .having((e) => e.mayHaveBeenSent, 'may have been sent', false)
+              .having((e) => e.message, 'message', contains('Chưa gửi lệnh')),
+        ),
+      );
+      expect(sends, 0);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('pending_feed:http://test'), isNull);
+    },
+  );
+
+  test(
+    'unconfirmed submission retains the exact payload and reports uncertainty',
+    () async {
+      final client = MockClient((req) async {
+        if (req.url.path == '/api/id') {
+          return http.Response(
+            jsonEncode({
+              'command_id': 'unconfirmed-id',
+              'now': 1792500000,
+              'ttl_s': 60,
+            }),
+            200,
+          );
+        }
+        if (req.url.path == '/api/history') {
+          return http.Response(jsonEncode({'commands': []}), 200);
+        }
+        throw http.ClientException('Connection reset');
+      });
+      final api = ApiService.testing(client, baseUrl: 'http://test');
+      await expectLater(
+        api.feedNow(portion: 30, override: false),
+        throwsA(
+          isA<FeedRequestException>()
+              .having((e) => e.mayHaveBeenSent, 'may have been sent', true)
+              .having((e) => e.message, 'message', contains('Gửi lại cùng mã')),
+        ),
+      );
+      final prefs = await SharedPreferences.getInstance();
+      expect(
+        jsonDecode(prefs.getString('pending_feed:http://test')!)['portion'],
+        30,
+      );
+    },
+  );
+
+  test('recovered sensor failure never reports a successful meal', () async {
+    final client = MockClient((req) async {
+      if (req.url.path == '/api/id') {
+        return http.Response(
+          jsonEncode({
+            'command_id': 'failed-id',
+            'now': 1792500000,
+            'ttl_s': 60,
+          }),
+          200,
+        );
+      }
+      if (req.url.path == '/api/history') {
+        return http.Response(
+          jsonEncode({
+            'commands': [
+              {
+                'command_id': 'failed-id',
+                'status': 'SENSOR_ERROR',
+                'error_code': 'WEIGHT_UNSTABLE',
+                'actual_weight_g': null,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      throw http.ClientException('Lost feed response');
+    });
+    final api = ApiService.testing(client, baseUrl: 'http://test');
+    final result = await api.feedNow(portion: 30, override: false);
+    expect(result['success'], false);
+    expect(result['code'], 'WEIGHT_UNSTABLE');
+    expect(result['data']['actual_weight_g'], isNull);
+    expect(result['message'], contains('dừng vì lỗi cảm biến'));
   });
 
   test(
@@ -109,7 +261,7 @@ void main() {
       final api = ApiService.testing(client, baseUrl: 'http://test');
       await expectLater(
         api.feedNow(portion: 20, override: false),
-        throwsA(isA<http.ClientException>()),
+        throwsA(isA<FeedRequestException>()),
       );
       await expectLater(
         api.feedNow(portion: 80, override: false),

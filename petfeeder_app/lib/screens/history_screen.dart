@@ -57,11 +57,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
         error: result['success'] != true,
       );
       await _load();
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         showFeedback(
           context,
-          'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã.',
+          error is FeedRequestException
+              ? error.message
+              : error is StateError
+              ? error.message.toString()
+              : 'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã.',
           error: true,
         );
       }

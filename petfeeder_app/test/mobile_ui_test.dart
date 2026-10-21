@@ -19,6 +19,7 @@ class FakeBackend {
   bool duplicate = false;
   bool failDelete = false;
   bool failCandidate = false;
+  bool failId = false;
   bool partial = false;
   Completer<void>? pendingFeed;
   final requests = <http.Request>[];
@@ -58,6 +59,7 @@ class FakeBackend {
       });
     }
     if (path == '/api/id') {
+      if (failId) return http.Response('<html>Not found</html>', 404);
       return http.Response(
         jsonEncode({
           'command_id': 'test-${requests.length}',
@@ -393,6 +395,26 @@ void main() {
       }, () => MockClient(api.handle));
     },
   );
+
+  testWidgets('feeding reports preflight failure while device remains online', (
+    tester,
+  ) {
+    final api = FakeBackend()..failId = true;
+    return http.runWithClient(() async {
+      await start(tester);
+      await reveal(tester, find.text('Cho ăn · 30 g'));
+      await tester.tap(find.text('Cho ăn · 30 g'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Không tạo được mã yêu cầu'), findsOneWidget);
+      expect(find.text('Đang trực tuyến'), findsOneWidget);
+      expect(
+        api.requests.where((r) => r.url.path == '/api/feeding/feed'),
+        isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => MockClient(api.handle));
+  });
 
   testWidgets('duplicate warning enforces cooldown and blocks double taps', (
     tester,
