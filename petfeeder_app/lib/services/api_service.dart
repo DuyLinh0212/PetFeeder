@@ -29,6 +29,18 @@ class ApiService {
   }) =>
       _client?.post(uri, headers: headers, body: body) ??
       http.post(uri, headers: headers, body: body);
+  Future<http.Response> _postFeed(Uri uri, {required String body}) async {
+    final requestClient = _client ?? http.Client();
+    try {
+      return await requestClient
+          .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
+          .timeout(const Duration(seconds: 2));
+    } finally {
+      // Closing the request-scoped client aborts the socket when the timeout fires.
+      if (_client == null) requestClient.close();
+    }
+  }
+
   Future<http.Response> _put(
     Uri uri, {
     Map<String, String>? headers,
@@ -55,6 +67,7 @@ class ApiService {
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('main_api_base_url') ?? baseUrl;
+    await prefs.remove('pending_feed:$baseUrl');
   }
 
   Future<void> setBaseUrl(String url) async {
@@ -149,133 +162,55 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>> feedNow({
-    required num portion,
-    bool retry = false,
-  }) async {
+  Future<Map<String, dynamic>> feedNow({required num portion}) async {
     final server = baseUrl;
-    var stage = 'đọc yêu cầu đã lưu';
+    var stage = 'tạo mã yêu cầu';
     var submitted = false;
-    Map<String, dynamic>? command;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final key = 'pending_feed:$server';
-      final saved = prefs.getString(key);
-      command = saved == null ? null : _feedBody(saved);
-      if (retry && command == null) {
-        throw StateError('Chưa có yêu cầu đã lưu để gửi lại.');
+      final idResponse = await _get(
+        Uri.parse('$server/api/id'),
+      ).timeout(const Duration(seconds: 2));
+      if (idResponse.statusCode != 200) {
+        throw FeedRequestException(
+          'Không tạo được mã yêu cầu trên máy chủ (HTTP ${idResponse.statusCode}). Chưa gửi lệnh cho ăn; kiểm tra địa chỉ và phiên bản backend.',
+          mayHaveBeenSent: false,
+        );
       }
-      if (!retry && command != null) {
-        stage = 'đọc kết quả yêu cầu trước';
-        final res = await _get(
-          Uri.parse('$server/api/commands/${Uri.encodeComponent(command['command_id'] as String)}'),
-        ).timeout(const Duration(seconds: 4));
-        if (res.statusCode != 200 && res.statusCode != 404) {
-          throw FeedRequestException(
-            'Không đọc được kết quả yêu cầu trước (HTTP ${res.statusCode}). Giữ nguyên mã lệnh và thử lại khi kết nối hoạt động.',
-            mayHaveBeenSent: false,
-          );
-        }
-        final previous = res.statusCode == 200
-            ? Map<String, dynamic>.from(
-                _feedBody(utf8.decode(res.bodyBytes))['data'] as Map,
-              )
-            : null;
-        const terminal = {
-          'SUCCESS',
-          'PARTIAL',
-          'OVER_PORTION',
-          'REJECTED',
-          'COMMAND_EXPIRED',
-          'SENSOR_ERROR',
-          'BOWL_MISSING',
-          'TIMEOUT',
-          'INTERRUPTED',
-        };
-        if (previous != null && terminal.contains(previous['status'])) {
-          command = null;
-        }
-        if (command != null) {
-          throw StateError(
-            'Chưa rõ kết quả yêu cầu trước. Dùng Gửi lại cùng mã.',
-          );
-        }
-        // A new command is allowed only after the previous result is terminal.
+      final id = _feedBody(utf8.decode(idResponse.bodyBytes));
+      if (id['command_id'] is! String ||
+          (id['command_id'] as String).isEmpty ||
+          id['now'] is! int ||
+          id['ttl_s'] is! int) {
+        throw const FormatException('Invalid command ID response');
       }
-      if (command == null) {
-        stage = 'tạo mã yêu cầu';
-        final res = await _get(
-          Uri.parse('$server/api/id'),
-        ).timeout(const Duration(seconds: 4));
-        if (res.statusCode != 200) {
-          throw FeedRequestException(
-            'Không tạo được mã yêu cầu trên máy chủ (HTTP ${res.statusCode}). Chưa gửi lệnh cho ăn; kiểm tra địa chỉ và phiên bản backend.',
-            mayHaveBeenSent: false,
-          );
-        }
-        final id = _feedBody(utf8.decode(res.bodyBytes));
-        if (id['command_id'] is! String ||
-            (id['command_id'] as String).isEmpty ||
-            id['now'] is! int ||
-            id['ttl_s'] is! int) {
-          throw const FormatException('Invalid command ID response');
-        }
-        command = {
-          'command_id': id['command_id'],
-          'created_at': id['now'],
-          'expires_at': id['now'] + id['ttl_s'],
-          'portion': portion,
-        };
-        stage = 'lưu mã yêu cầu trên điện thoại';
-        if (!await prefs.setString(key, jsonEncode(command))) {
-          throw StateError(
-            'Không lưu được mã trên điện thoại. Chưa gửi lệnh cho ăn.',
-          );
-        }
-      }
+      final commandId = id['command_id'] as String;
+      final command = {
+        'command_id': commandId,
+        'created_at': id['now'],
+        'expires_at': id['now'] + id['ttl_s'],
+        'portion': portion,
+      };
+
       stage = 'gửi lệnh cho ăn';
       submitted = true;
-      final res = await _post(
+      final response = await _postFeed(
         Uri.parse('$server/api/feeding/feed'),
-        headers: {'Content-Type': 'application/json'},
         body: jsonEncode(command),
-      ).timeout(const Duration(seconds: 5));
-      final data = _feedBody(utf8.decode(res.bodyBytes));
-      if (res.statusCode == 200 && data['success'] is! bool) {
+      );
+      final data = _feedBody(utf8.decode(response.bodyBytes));
+      if (data['success'] is! bool) {
         throw const FormatException('Invalid feeding response');
       }
-      final returned = data['data'] is Map
-          ? Map<String, dynamic>.from(data['data'] as Map)
-          : const <String, dynamic>{};
-      const terminal = {
-        'SUCCESS', 'PARTIAL', 'OVER_PORTION', 'REJECTED',
-        'COMMAND_EXPIRED', 'SENSOR_ERROR', 'BOWL_MISSING', 'TIMEOUT', 'INTERRUPTED',
-      };
-      if (res.statusCode == 400 && data['code'] == 'COMMAND_EXPIRED') {
-        await prefs.remove(key);
-      }
-      if (data['code'] != 'COMMAND_ID_CONFLICT' &&
-          terminal.contains(returned['status'])) {
-        await prefs.remove(key);
-      }
       return {
-        'success': res.statusCode == 200 && data['success'] == true,
+        'success': response.statusCode == 200 && data['success'] == true,
         'code': data['code'],
         'message': data['message'] ?? 'Chờ xác nhận thiết bị',
         'data': data['data'],
       };
-    } on StateError {
-      rethrow;
     } on FeedRequestException {
       rethrow;
     } catch (error) {
       debugPrint('PetFeeder: lỗi khi $stage: $error');
-      final submittedId = command?['command_id'];
-      if (submitted && submittedId is String) {
-        // Query only: a lost HTTP response must never cause another feed POST.
-        final recovered = await _recoverFeed(server, submittedId);
-        if (recovered != null) return recovered;
-      }
       final reason = error is TimeoutException
           ? 'Máy chủ phản hồi quá chậm khi $stage.'
           : error is http.ClientException
@@ -284,7 +219,7 @@ class ApiService {
           ? 'Dữ liệu không hợp lệ khi $stage. Kiểm tra phiên bản app và backend.'
           : 'Không thể $stage.';
       throw FeedRequestException(
-        '$reason ${submitted ? 'Chưa rõ lệnh đã tới thiết bị. Dùng Gửi lại cùng mã để tra kết quả.' : 'Chưa gửi lệnh cho ăn mới.'}',
+        '$reason ${submitted ? 'Lệnh có thể đã tới thiết bị. Ứng dụng không lưu lệnh chờ; hãy kiểm tra trạng thái thiết bị trước khi quyết định cấp tiếp.' : 'Chưa gửi lệnh cho ăn.'}',
         mayHaveBeenSent: submitted,
       );
     }
@@ -296,68 +231,6 @@ class ApiService {
       throw const FormatException('Expected a JSON object');
     }
     return value;
-  }
-
-  Future<Map<String, dynamic>?> _recoverFeed(
-    String server,
-    String commandId,
-  ) async {
-    try {
-      final res = await _get(
-        Uri.parse('$server/api/commands/${Uri.encodeComponent(commandId)}'),
-      ).timeout(const Duration(seconds: 4));
-      if (res.statusCode != 200) return null;
-      final previous = Map<String, dynamic>.from(
-        _feedBody(utf8.decode(res.bodyBytes))['data'] as Map,
-      );
-      final status = previous['status'];
-      final message = switch (status) {
-        'QUEUED' => 'Máy chủ đã nhận yêu cầu; đang chờ thiết bị xác nhận.',
-        'ACCEPTED' => 'Thiết bị đã nhận yêu cầu; đang chuẩn bị cấp thức ăn.',
-        'DISPENSING' => 'Thiết bị đang cấp khẩu phần đã yêu cầu.',
-        'SUCCESS' => 'Thiết bị đã xác nhận hoàn tất phiên cấp.',
-        'DELIVERY_UNKNOWN' =>
-          'Máy chủ đã nhận yêu cầu nhưng chưa có kết quả từ thiết bị. Dùng Gửi lại cùng mã.',
-        'COMMAND_EXPIRED' =>
-          'Yêu cầu đã hết hạn; thiết bị không thực hiện lệnh này.',
-        'SENSOR_ERROR' =>
-          'Thiết bị đã dừng vì cân lỗi hoặc bát không còn trên cân.',
-        'BOWL_MISSING' =>
-          'Bát đã rời cân giữa phiên. Lượng cấp chưa xác định; cần kiểm tra và đối soát thiết bị.',
-        'REJECTED' => 'Thiết bị từ chối yêu cầu: ${previous['error_code'] ?? 'REJECTED'}.',
-        'PARTIAL' => 'Thiết bị đã dừng trước khi đạt đủ lượng đặt.',
-        'TIMEOUT' => 'Thiết bị đã dừng sau khi hết thời gian cấp tối đa.',
-        'INTERRUPTED' => 'Phiên cấp bị gián đoạn; cần kiểm tra thiết bị.',
-        'OVER_PORTION' => 'Thiết bị đã dừng để tránh cấp quá lượng đặt.',
-        _ => null,
-      };
-      if (message == null) return null;
-      const terminal = {
-        'SUCCESS', 'PARTIAL', 'OVER_PORTION', 'REJECTED',
-        'COMMAND_EXPIRED', 'SENSOR_ERROR', 'BOWL_MISSING', 'TIMEOUT', 'INTERRUPTED',
-      };
-      if (terminal.contains(status)) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('pending_feed:$server');
-      }
-      return {
-        'success': const {
-          'QUEUED',
-          'ACCEPTED',
-          'DISPENSING',
-          'SUCCESS',
-          'DELIVERY_UNKNOWN',
-        }.contains(status),
-        'code': status == 'DELIVERY_UNKNOWN'
-            ? 'AWAITING_DEVICE_RESULT'
-            : previous['error_code'],
-        'message': message,
-        'data': Map<String, dynamic>.from(previous),
-      };
-    } catch (_) {
-      // Keep the saved payload when both the reply and the lookup are unavailable.
-      return null;
-    }
   }
 
   // Lịch được lưu trên ESP32 để tiếp tục chạy khi mất mạng.
@@ -414,5 +287,4 @@ class ApiService {
     final res = await _delete(uri).timeout(const Duration(seconds: 8));
     return res.statusCode == 200;
   }
-
 }

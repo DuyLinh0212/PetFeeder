@@ -1,5 +1,12 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {defaults,config,command,schedules,terminal,dispensedStatuses,identifier,number,object,Invalid,sameCommand,dayKey} from '../domain/feedingPolicy.mjs';
+
+const commandFields=['command_id','source','target_portion_g','created_at','expires_at','pet_id','recognition_id','recognition_expires_at','recognition_source','confidence'];
+
+function wireCommand(row){
+  return Object.fromEntries(commandFields.filter(key=>row[key]!==undefined).map(key=>[key,row[key]]));
+}
+
 export class FeedingService {
   constructor(store, transport, clock=()=>Math.floor(Date.now()/1000)) { this.store=store;this.transport=transport;this.clock=clock;this.lastHeartbeatSync=null;this.identity=null; }
   settings(){
@@ -23,17 +30,9 @@ export class FeedingService {
     ['cat','dog'].includes(p.pet_type)&&p.confidence>=0.5&&p.issued_at<=this.clock()+2&&p.expires_at>this.clock()&&p.expires_at-p.issued_at<=5;}
   feed(input){
     object(input);const old=this.store.get('commands',input.command_id);
-    // A retry keeps the command ID and original expiry, so it cannot create a second feed.
+    // A repeated ID is idempotent: return its recorded state without publishing again.
     if(old){
       if(!sameCommand(old,input)) throw new Invalid('COMMAND_ID_CONFLICT');
-      // DELIVERY_UNKNOWN means the device may have received the first publish,
-      // but its result did not reach the server. Re-send the exact same command
-      // so the device can return its durable result or safely reject the expiry.
-      if(old.status==='DELIVERY_UNKNOWN'){
-        const keys=['command_id','source','target_portion_g','created_at','expires_at','pet_id','recognition_id','recognition_expires_at','recognition_source','confidence'];
-        const payload=Object.fromEntries(keys.filter(key=>old[key]!==undefined).map(key=>[key,old[key]]));
-        return {...old,delivery_attempted:this.transport.send('command',payload)};
-      }
       return old;
     }
     const c=command(input,this.settings(),this.clock());
@@ -51,7 +50,13 @@ export class FeedingService {
       recognition_expires_at:p.expires_at,recognition_source:p.source,confidence:p.confidence});}
     const row={...c,status:reason?'REJECTED':'QUEUED',error_code:reason,actual_weight_g:null,updated_at:this.clock(),identity_context:cfg.require_pet?this.identity:null};
     this.store.put('commands',c.command_id,row);
-    if(!reason)this.transport.send('command',c);
+    if(!reason){
+      const sent=this.transport.send('command',wireCommand(row));
+      const current=this.store.get('commands',c.command_id);
+      if(!sent&&current?.status==='QUEUED')this.store.put('commands',c.command_id,{
+        ...current,status:'DELIVERY_FAILED',error_code:'MQTT_UNAVAILABLE',updated_at:this.clock(),
+      });
+    }
     return this.store.get('commands',c.command_id);
   }
   heartbeat(h){

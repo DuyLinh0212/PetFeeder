@@ -164,13 +164,10 @@ class _CameraDemoScreenState extends State<CameraDemoScreen>
     await old?.dispose();
   }
 
-  Future<void> feed({bool retry = false}) async {
+  Future<void> feed() async {
     setState(() => feeding = true);
     try {
-      final response = await api.feedNow(
-        portion: 20,
-        retry: retry,
-      );
+      final response = await api.feedNow(portion: 20);
       if (mounted) {
         setState(() {
           message =
@@ -267,10 +264,6 @@ class _CameraDemoScreenState extends State<CameraDemoScreen>
           FilledButton(
             onPressed: !live || !hasPet || feeding ? null : () => feed(),
             child: Text(feeding ? 'Đang gửi...' : 'Cho ăn · 20 g'),
-          ),
-          TextButton(
-            onPressed: feeding ? null : () => feed(retry: true),
-            child: const Text('Gửi lại cùng mã'),
           ),
           const Text(
             'Phát hiện chó/mèo chỉ cho qua bước hiện diện. Vẫn cần chủ xác nhận thức ăn, đủ thời gian chờ, cân hợp lệ và hạn mức. Xem kết quả ở Nhật ký hoặc Serial.',

@@ -3,6 +3,8 @@ class DeviceStatus {
   final bool online;
   final String systemStatus;
   final double? bowlWeightG;
+  final int? foodLevelPercent;
+  final double? distanceCm;
   final String ipAddress;
   final int wifiRssi;
   final String? lastSeen;
@@ -24,6 +26,8 @@ class DeviceStatus {
     required this.online,
     required this.systemStatus,
     required this.bowlWeightG,
+    this.foodLevelPercent,
+    this.distanceCm,
     required this.ipAddress,
     required this.wifiRssi,
     required this.lastSeen,
@@ -50,6 +54,8 @@ class DeviceStatus {
       online: json['online'] == true,
       systemStatus: json['system_status'] as String? ?? 'SAN SANG',
       bowlWeightG: (json['bowl_weight_g'] as num?)?.toDouble(),
+      foodLevelPercent: (json['food_level_percent'] as num?)?.toInt(),
+      distanceCm: (json['distance_cm'] as num?)?.toDouble(),
       ipAddress: json['ip_address'] as String? ?? '',
       wifiRssi: (json['wifi_rssi'] as num?)?.toInt() ?? 0,
       lastSeen: json['last_seen'] as String?,
@@ -60,8 +66,7 @@ class DeviceStatus {
       maxDailyFeeds: (json['max_daily_feeds'] as num?)?.toInt() ?? 6,
       bowlCapacityG: (json['bowl_capacity_g'] as num?)?.toInt() ?? 150,
       requirePet: json['require_pet'] == true,
-      dailyDispensedG:
-          (daily['actual_dispensed_g'] as num?)?.toDouble() ?? 0,
+      dailyDispensedG: (daily['actual_dispensed_g'] as num?)?.toDouble() ?? 0,
       dailyFeedCount: (daily['confirmed_sessions'] as num?)?.toInt() ?? 0,
       locked: json['locked'] == true,
       timeValid: json['time_valid'] == true,
@@ -93,7 +98,8 @@ class FeedingSchedule {
       name: json['name'] as String? ?? 'Lịch cho ăn',
       time: json['time'] as String? ?? '07:00',
       portionG: (json['portion_g'] as num?)?.toInt() ?? 30,
-      days: (json['days'] as List<dynamic>?)?.map((e) => e.toString()).toList() ??
+      days:
+          (json['days'] as List<dynamic>?)?.map((e) => e.toString()).toList() ??
           const ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'],
       enabled: json['enabled'] == true,
     );

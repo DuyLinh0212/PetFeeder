@@ -33,12 +33,18 @@ function normalizeHeartbeat(payload,clock){
   const deviceId=typeof payload.device_id==='string'?payload.device_id:'petfeeder_01';
   const weight=typeof payload.weight_g==='number'?payload.weight_g:
     typeof payload.bowl_weight_g==='number'?payload.bowl_weight_g:null;
+  const distance=typeof payload.distance_cm==='number'&&Number.isFinite(payload.distance_cm)&&payload.distance_cm>=0&&payload.distance_cm<=500
+    ?payload.distance_cm:null;
+  const foodLevel=typeof payload.food_level_percent==='number'&&Number.isFinite(payload.food_level_percent)&&payload.food_level_percent>=0&&payload.food_level_percent<=100
+    ?Math.round(payload.food_level_percent):null;
   return {
     device_id:deviceId,
     status:typeof payload.status==='string'?payload.status:'SAN SANG',
     occurred_at:epochSeconds(payload.occurred_at??payload.timestamp,clock()),
     busy:typeof payload.busy==='boolean'?payload.busy:/DANG\s*(CAP|CHO AN)/i.test(String(payload.status||'')),
     weight_g:weight,
+    distance_cm:distance,
+    food_level_percent:foodLevel,
     ip:typeof payload.ip==='string'?payload.ip:'',
     rssi:Number.isInteger(payload.rssi)?payload.rssi:0,
     locked:payload.locked===true,
@@ -109,9 +115,9 @@ export function createBackend({dataDir,legacyFile,brokerUrl,prefix='duylinh0212/
     client.on('error',e=>console.error('[MQTT] Lỗi kết nối broker:',e.message));
   }
   function tick(){
+    const now=clock();
     for(const c of db.all('commands'))if(c.status==='QUEUED'){
-      if(clock()>=c.expires_at)db.put('commands',c.command_id,{...c,status:'DELIVERY_UNKNOWN',error_code:'AWAITING_DEVICE_RESULT'});
-      else transport.send('command',c);
+      if(now>=c.expires_at)db.put('commands',c.command_id,{...c,status:'DELIVERY_UNKNOWN',error_code:'AWAITING_DEVICE_RESULT'});
     }
   }
   const timer=setInterval(tick,1000);timer.unref();

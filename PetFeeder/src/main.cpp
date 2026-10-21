@@ -23,6 +23,8 @@
 #endif
 
 constexpr int SERVO_PIN=13, BUTTON_PIN=4, DT_PIN=19, SCK_PIN=23;
+constexpr int TRIG_PIN=5, ECHO_PIN=18;
+constexpr float TANK_HEIGHT_CM=25.0f, HOPPER_CAPACITY_G=500.0f;
 constexpr int GREEN_PIN=2, RED_PIN=15, BUZZER_PIN=14;
 Adafruit_SSD1306 display(128,64,&Wire,-1);
 bool oledOK=false,simAuto=false;
@@ -43,7 +45,7 @@ bool storageOK=false,weightOK=false,busy=false,motorOpen=false;
 float weightG=0,lastSample=0;
 float weightWindow[5]={0};int weightWindowCount=0,weightWindowIndex=0;
 unsigned long lastWeightAt=0;
-unsigned long sampleAt=0,stableAt=0,beatAt=0,publishAt=0,connectAt=0,scanAt=0;
+unsigned long sampleAt=0,stableAt=0,beatAt=0,publishAt=0,connectAt=0,scanAt=0,hopperAt=0;
 unsigned long feedAt=0,servoAt=0;
 unsigned long scanSavedAt=0;
 String serialLine;
@@ -51,6 +53,7 @@ String bootId;
 String root=MQTT_TOPIC_PREFIX;
 String mqttClientId;
 bool clockSyncReported=false,syncTelemetryPending=false;
+float distanceCM=NAN;
 bool validTime(){return time(nullptr)>1700000000;}
 long nowSec(){return (long)time(nullptr);}
 void servo(bool open){motorOpen=open;servoAngle(open?(finePulse?60:state["config"]["pulse_step_angle"].as<int>()):0);}
@@ -61,6 +64,7 @@ void updatePanel(){
   if(!oledOK||millis()-displayAt<500)return;displayAt=millis();
   display.clearDisplay();display.setTextColor(SSD1306_WHITE);display.setTextSize(1);display.setCursor(0,0);
   display.println("PETFEEDER NHOM 7");
+  display.print("Hop: ");if(isfinite(distanceCM))display.print((int)constrain((1-distanceCM/TANK_HEIGHT_CM)*100,0.0f,100.0f));else display.print("?");display.println("%");
   display.print("Bat: ");if(weightOK)display.print(weightG,1);else display.print("?");display.println(" g");
   display.print("Ngay: ");display.print(state["used_g"].as<float>(),0);display.print("/");display.print(state["config"]["daily_limit_g"].as<float>(),0);display.print("g ");display.print(state["feed_count"].as<int>());display.println(" bua");
   display.print("TT: ");display.println(!storageOK?"STORAGE LOCK":busy?"DANG CAP":uiStatus);
@@ -119,7 +123,7 @@ void defaults(){
   state["events"].to<JsonArray>();state["history"].to<JsonArray>();state["schedules"].to<JsonArray>();
   state["runs"].to<JsonArray>();
   state["seq"]=0;state["last_end"]=0;state["last_scan"]=0;state["locked"]=false;
-  state["used_g"]=0;state["feed_count"]=0;state["day"]="";state["sim_bowl_g"]=0;state["sim_auto"]=true;
+  state["used_g"]=0;state["feed_count"]=0;state["day"]="";state["sim_bowl_g"]=0;state["sim_hopper_g"]=260;state["sim_auto"]=true;
 #if WOKWI_SIM
   state["calibrated"]=true;state["offset"]=0;state["factor"]=0.42; // Wokwi 5kg: 2100 raw / 5000g
 #else
@@ -414,6 +418,10 @@ void scanSchedules(){
 void heartbeat(){
   JsonDocument h;h["device_id"]=DEVICE_ID;h["status"]=busy?"DANG CHO AN...":uiStatus;
   if(weightOK)h["bowl_weight_g"]=weightG;else h["bowl_weight_g"]=nullptr;
+  if(isfinite(distanceCM)){
+    h["distance_cm"]=distanceCM;
+    h["food_level_percent"]=(int)constrain((1-distanceCM/TANK_HEIGHT_CM)*100,0.0f,100.0f);
+  }else{h["distance_cm"]=nullptr;h["food_level_percent"]=nullptr;}
   h["sensor_mode"]=simAuto?"DEMO_AUTO":"HX711_MANUAL";h["ip"]=WiFi.localIP().toString();h["rssi"]=WiFi.RSSI();h["occurred_at"]=validTime()?nowSec():0;h["busy"]=busy;h["time_valid"]=validTime();
   if(weightOK)h["weight_g"]=weightG;else h["weight_g"]=nullptr;
   h["locked"]=state["locked"].as<bool>()||!storageOK;
@@ -444,7 +452,7 @@ void setup(){
   ledcSetup(0,50,16);ledcAttachPin(SERVO_PIN,0);servo(false);
   pinMode(GREEN_PIN,OUTPUT);pinMode(RED_PIN,OUTPUT);pinMode(BUZZER_PIN,OUTPUT);
   Wire.begin(21,22);oledOK=display.begin(SSD1306_SWITCHCAPVCC,0x3c);
-  pinMode(BUTTON_PIN,INPUT_PULLUP);scale.begin(DT_PIN,SCK_PIN);
+  pinMode(BUTTON_PIN,INPUT_PULLUP);pinMode(TRIG_PIN,OUTPUT);pinMode(ECHO_PIN,INPUT);scale.begin(DT_PIN,SCK_PIN);
   // Only a fully erased Wokwi partition may be initialized automatically.
   // Existing data and real hardware must never be formatted on a mount failure.
 #if WOKWI_SIM
@@ -466,7 +474,8 @@ void setup(){
     for(int i=0;i<13;i++)if(c[keys[i]].isNull()){c[keys[i]]=values[i];changed=true;}
     if(c["require_pet"].isNull()){c["require_pet"]=false;changed=true;}
     for(const char* key:{"tank_height_cm","empty_threshold_cm","observation_s","food_stale_s","food_confirmed","food_label","lockdown","anti_jam_max_retries"})if(!c[key].isNull()){c.remove(key);changed=true;}
-    for(const char* key:{"observations","food_since","stale_alert","sim_hopper_g"})if(!state[key].isNull()){state.remove(key);changed=true;}
+    for(const char* key:{"observations","food_since","stale_alert"})if(!state[key].isNull()){state.remove(key);changed=true;}
+    if(state["sim_hopper_g"].isNull()){state["sim_hopper_g"]=260;changed=true;}
     if(state["events"].isNull()){state["events"].to<JsonArray>();changed=true;}
     if(state["history"].isNull()){state["history"].to<JsonArray>();changed=true;}
     if(state["schedules"].isNull()){state["schedules"].to<JsonArray>();changed=true;}
@@ -522,6 +531,23 @@ void loop(){
   if(!storageOK){servo(false);delay(1);return;}
   unsigned long ms=millis();
   weightDropped=false;
+  if(ms-hopperAt>=500){
+    hopperAt=ms;
+#if WOKWI_SIM
+    if(simAuto){
+      float hopperG=constrain(state["sim_hopper_g"].as<float>(),0.0f,HOPPER_CAPACITY_G);
+      distanceCM=TANK_HEIGHT_CM*(1-hopperG/HOPPER_CAPACITY_G);
+    }else
+#endif
+    {
+      distanceCM=NAN;
+      for(int attempt=0;attempt<3;attempt++){
+        digitalWrite(TRIG_PIN,LOW);delayMicroseconds(2);digitalWrite(TRIG_PIN,HIGH);delayMicroseconds(10);digitalWrite(TRIG_PIN,LOW);
+        unsigned long echo=pulseIn(ECHO_PIN,HIGH,25000);
+        if(echo){distanceCM=echo/58.0f;break;}
+      }
+    }
+  }
   if(ms-sampleAt>=100){
     sampleAt=ms;
     #if WOKWI_SIM
@@ -529,7 +555,7 @@ void loop(){
       if(busy&&motorOpen&&ms-servoAt>=(finePulse?150:cf("pulse_step_ms")-50)){
         float remaining=state["active"]["target_portion_g"].as<float>()-(state["sim_bowl_g"].as<float>()-state["active"]["baseline"].as<float>());
         float gain=max(0.0f,min(finePulse?2.5f:5.0f,remaining));
-        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;servo(false);persist();Serial.printf("MÔ PHỎNG: lượng cân tăng %.1f g (số liệu giả lập).\n",gain);}
+        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=max(0.0f,state["sim_hopper_g"].as<float>()-gain);servo(false);persist();Serial.printf("MÔ PHỎNG: lượng cân tăng %.1f g (số liệu giả lập).\n",gain);}
       }
       float w=state["sim_bowl_g"].as<float>();weightOK=isfinite(w);bowlMissing=false;weightG=w;
       trackWeight(ms);

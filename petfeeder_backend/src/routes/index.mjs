@@ -1,4 +1,5 @@
 import express from 'express';
+import {performance} from 'node:perf_hooks';
 import {Invalid,object,identifier} from '../domain/feedingPolicy.mjs';
 
 const dayNames=['CN','T2','T3','T4','T5','T6','T7'];
@@ -19,10 +20,11 @@ const rejectionMessages={
   OVER_PORTION:'Thiết bị đã dừng để tránh cấp thêm quá lượng đặt.',
   INTERRUPTED:'Phiên cấp bị gián đoạn; kiểm tra bát và thiết bị trước khi tiếp tục.',
   TIMEOUT:'Thiết bị đã dừng sau khi hết thời gian cấp tối đa.',
+  MQTT_UNAVAILABLE:'Máy chủ không kết nối được MQTT nên chưa gửi lệnh tới thiết bị.',
 };
 const failedCommandStatuses=new Set([
   'PARTIAL','OVER_PORTION','REJECTED','COMMAND_EXPIRED','SENSOR_ERROR',
-  'BOWL_MISSING','TIMEOUT','INTERRUPTED',
+  'BOWL_MISSING','TIMEOUT','INTERRUPTED','DELIVERY_FAILED',
 ]);
 
 export function toSchedule(s,id){
@@ -37,12 +39,14 @@ export function fromSchedule(s){return {id:s.schedule_id,name:s.name||'Lịch ch
 
 export function createApiRouter({db,service,clock,connected}){
   const router=express.Router();
+  let lastFeedRequestAt=-Infinity;
   const ok=(res,data,extra={})=>res.json({success:true,data,...extra});
   function device(){
     const s=service.state(),h=s.device||{};
     return {device_id:h.device_id||'petfeeder_01',online:s.connection!=='OFFLINE',mqtt_connected:connected(),
       system_status:s.connection==='BUSY'?'DANG CHO AN...':s.connection==='OFFLINE'?'NGOAI TUYEN':h.status||'SAN SANG',
-      bowl_weight_g:h.weight_g??null,ip_address:h.ip||'',wifi_rssi:h.rssi??0,
+      bowl_weight_g:h.weight_g??null,food_level_percent:h.food_level_percent??null,
+      distance_cm:h.distance_cm??null,ip_address:h.ip||'',wifi_rssi:h.rssi??0,
       min_interval_s:s.config.min_interval_s,max_portion_g:s.config.max_portion_g,
       daily_limit_g:s.config.daily_limit_g,max_daily_feeds:s.config.max_daily_feeds,
       bowl_capacity_g:s.config.bowl_capacity_g,require_pet:s.config.require_pet,
@@ -63,14 +67,20 @@ export function createApiRouter({db,service,clock,connected}){
     const b=object(req.body);
     for(const key of Object.keys(b))if(!['command_id','portion','created_at','expires_at'].includes(key))throw new Invalid('UNKNOWN_FIELD',key);
     if(!b.command_id)throw new Invalid('COMMAND_ID_REQUIRED','command_id');
+    const requestAt=performance.now();
+    const elapsed=requestAt-lastFeedRequestAt;
+    if(elapsed<500){
+      const retryAfterMs=Math.max(1,Math.ceil(500-elapsed));
+      return res.status(429).json({success:false,code:'RATE_LIMITED',retry_after_ms:retryAfterMs,
+        message:`Chỉ nhận một yêu cầu cho ăn trong mỗi 0,5 giây. Thử lại sau ${retryAfterMs} ms.`});
+    }
+    lastFeedRequestAt=requestAt;
     const result=service.feed({command_id:b.command_id,source:'APP',target_portion_g:b.portion,
       created_at:b.created_at,expires_at:b.expires_at});
     const failed=failedCommandStatuses.has(result.status);
     const reason=result.error_code;
     const message=result.status==='DELIVERY_UNKNOWN'
-      ?result.delivery_attempted
-        ?'Đã gửi lại đúng mã lệnh để thiết bị trả kết quả đã lưu.'
-        :'Chưa gửi lại được qua MQTT. Giữ nguyên mã lệnh và thử lại khi kết nối hoạt động.'
+      ?'Máy chủ chưa nhận được kết quả cuối từ thiết bị. Hãy kiểm tra trạng thái trước khi quyết định cấp thêm.'
       :result.status==='SUCCESS'?'Thiết bị đã xác nhận cấp đủ khẩu phần.'
       :failed?`${rejectionMessages[reason]||rejectionMessages[result.status]||'Hệ thống chưa thể thực hiện yêu cầu.'}${reason?` (${reason})`:''}`
       :'Đã nhận yêu cầu; đang chờ ESP32 xác nhận kết quả.';

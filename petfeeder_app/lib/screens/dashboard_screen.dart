@@ -22,15 +22,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _portion = 30;
   bool _submitting = false;
 
-  Future<void> _feed({bool retry = false}) async {
+  Future<void> _feed() async {
     if (_submitting || widget.status?.online != true) return;
     setState(() => _submitting = true);
     Map<String, dynamic>? result;
     try {
-      result = await ApiService().feedNow(
-        portion: _portion,
-        retry: retry,
-      );
+      result = await ApiService().feedNow(portion: _portion);
       if (!mounted) return;
       if (result['success'] == true) {
         showFeedback(
@@ -46,9 +43,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           context,
           error is FeedRequestException
               ? error.message
-              : error is StateError
-              ? error.message.toString()
-              : 'Chưa xác định kết quả. Kiểm tra kết nối và dùng Gửi lại cùng mã nếu đã gửi lệnh.',
+              : 'Không nhận được kết quả. Kiểm tra trạng thái thiết bị trước khi gửi yêu cầu tiếp theo.',
           error: true,
         );
       }
@@ -192,6 +187,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final online = status?.online == true;
     final known = status != null && online;
     final bowlKnown = known && status.bowlWeightG != null;
+    final hopperKnown = known && status.foodLevelPercent != null;
     final maxPortion = status?.maxPortionG ?? 100;
     final selectedPortion = _portion.clamp(
       maxPortion < 10 ? maxPortion : 10,
@@ -205,6 +201,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ? 'Sức chứa tối đa ${status.bowlCapacityG} g'
           : 'Chưa có số đo cân mới',
     );
+    final hopper = _metric(
+      label: 'Mức thức ăn trong hộp',
+      value: hopperKnown ? '${status.foodLevelPercent}%' : '—',
+      icon: Icons.inventory_2_rounded,
+      highlighted: true,
+      caption: hopperKnown
+          ? status.distanceCm == null
+                ? 'Ước tính từ cảm biến siêu âm'
+                : 'Ước tính · cách mặt hạt ${status.distanceCm!.toStringAsFixed(1)} cm'
+          : 'Chưa có số đo cảm biến mới',
+    );
     final dailyProgress = status == null || status.dailyLimitG == 0
         ? 0.0
         : (status.dailyDispensedG / status.dailyLimitG)
@@ -215,7 +222,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       value: '${status?.dailyDispensedG.toStringAsFixed(0) ?? '0'} g',
       icon: Icons.event_available_rounded,
       highlighted: true,
-      caption: '${status?.dailyFeedCount ?? 0}/${status?.maxDailyFeeds ?? 6} bữa · giới hạn ${status?.dailyLimitG ?? 200} g',
+      caption:
+          '${status?.dailyFeedCount ?? 0}/${status?.maxDailyFeeds ?? 6} bữa · giới hạn ${status?.dailyLimitG ?? 200} g',
       progress: dailyProgress,
     );
     return PageContent(
@@ -269,9 +277,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(height: 3),
                         Text(
                           online
-                              ? _systemLabel(status!.locked
-                                  ? 'RECONCILIATION_REQUIRED'
-                                  : status.systemStatus)
+                              ? _systemLabel(
+                                  status!.locked
+                                      ? 'RECONCILIATION_REQUIRED'
+                                      : status.systemStatus,
+                                )
                               : 'Kiểm tra nguồn điện, Wi-Fi và địa chỉ trong Cài đặt.',
                           style: const TextStyle(
                             color: AppTheme.textMuted,
@@ -295,18 +305,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 if (!wide) {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [bowl, const SizedBox(height: 12), daily],
+                    children: [bowl, const SizedBox(height: 12), hopper],
                   );
                 }
-                return IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(child: bowl),
-                      const SizedBox(width: 12),
-                      Expanded(child: daily),
-                    ],
-                  ),
+                return Column(
+                  children: [
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(child: bowl),
+                          const SizedBox(width: 12),
+                          Expanded(child: hopper),
+                        ],
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -367,14 +381,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  TextButton.icon(
-                    onPressed: !online || _submitting || widget.isLoading
-                        ? null
-                        : () => _feed(retry: true),
-                    icon: const Icon(Icons.replay_rounded, size: 18),
-                    label: const Text('Gửi lại cùng mã'),
-                  ),
                   if (status?.sensorMode == 'DEMO_AUTO')
                     const Text(
                       'Số liệu HX711 đang được mô phỏng, chưa xác nhận lượng cấp thực tế.',
@@ -384,7 +390,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       padding: EdgeInsets.only(top: 8),
                       child: Text(
                         'Đang yêu cầu xác minh thú. Mạch chưa có RFID/camera nên lệnh sẽ bị từ chối là UNKNOWN_PET.',
-                        style: TextStyle(color: AppTheme.accentAmber, fontSize: 12, height: 1.4),
+                        style: TextStyle(
+                          color: AppTheme.accentAmber,
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
                       ),
                     ),
                   Text(
@@ -400,6 +410,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
             ),
+            const SizedBox(height: 16),
+            daily,
           ],
         ),
       ),
