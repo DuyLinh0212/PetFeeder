@@ -41,10 +41,15 @@ test('C03 duplicate IDs and simultaneous sources cannot start a second session',
   assert.equal(f.deviceStore.all('device_totals')[0].feeds,1);
 });
 
-test('N01 a new portion is blocked when it would exceed bowl capacity',t=>{
-  const f=fixture(t);f.device.sensors.weight_g=140;f.device.heartbeat();
-  assert.equal(f.service.feed(f.command()).error_code,'BOWL_FULL');
-  assert.equal(f.device.s.active,null);
+test('N01 portion is additional to bowl weight and cannot exceed bowl capacity',t=>{
+  const fits=fixture(t);fits.device.sensors.weight_g=130;fits.device.heartbeat();
+  const accepted=fits.service.feed(fits.command());
+  assert.equal(accepted.status,'DISPENSING');
+  assert.equal(fits.device.s.active.target_portion_g,20);
+
+  const overflow=fixture(t);overflow.device.sensors.weight_g=140;overflow.device.heartbeat();
+  assert.equal(overflow.service.feed(overflow.command()).error_code,'BOWL_FULL');
+  assert.equal(overflow.device.s.active,null);
 });
 
 test('N02 daily feed count survives reboot and resets on the next day',t=>{
