@@ -1,0 +1,15 @@
+name: N01 bowl capacity with manual HX711
+version: 1
+steps:
+  - wait-serial: "PetFeeder đã sẵn sàng."
+  - write-serial: "sim manual"
+  - wait-serial: "CẢM BIẾN THẬT"
+  - set-control:
+      part-id: scale
+      name: load
+      value: 0.14
+  - delay: 2s
+  - wait-serial: "Đã kết nối MQTT"
+  - write-serial: "status"
+  - wait-serial: "Trạng thái: cân="
+  - delay: 60s
