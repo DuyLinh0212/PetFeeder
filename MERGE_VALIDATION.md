@@ -28,6 +28,8 @@ Merge giữ lịch sử; nhánh mobile đã chứa các commit firmware. Tài li
 
 MQTT kiểm tra bằng broker Aedes cục bộ, transport giả và cơ sở dữ liệu tạm; không phát lệnh lên thiết bị thật. Mô hình JavaScript kiểm chứng hợp đồng/chính sách, không mô phỏng thời gian điện hay thay thế chạy firmware trên ESP32.
 
+CI Ubuntu lần đầu phát hiện SDK không có Roboto mà cache Windows cũ có sẵn. Bộ test đã dùng fixture Roboto kèm giấy phép và tìm MaterialIcons không phụ thuộc chữ hoa/thường; không bỏ qua test giao diện. CI tiếp tục chạy toàn bộ test trước khi build APK và phát hành.
+
 ## Đối chiếu đủ 36 case
 
 “Tự động” dưới đây nghĩa là test mô hình/API/MQTT/Flutter tương ứng đã chạy. Mọi phần cơ khí, độ chính xác đo, flash và mất điện vật lý vẫn cần thử trên thiết bị.

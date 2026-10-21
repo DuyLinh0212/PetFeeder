@@ -205,7 +205,7 @@ Future<void> capture(WidgetTester tester, String name) async {
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
   setUpAll(() async {
-    // Use the SDK's real font metrics for layout checks, including the first viewport.
+    // Pin real font metrics across Windows and Linux; recent SDKs need not ship Roboto.
     final configFile = File('.dart_tool/package_config.json').absolute;
     final config =
         jsonDecode(await configFile.readAsString()) as Map<String, dynamic>;
@@ -218,19 +218,20 @@ void main() {
     final fonts = '$sdk/bin/cache/artifacts/material_fonts';
     final font =
         Platform.environment['PETFEEDER_PREVIEW_FONT'] ??
-        '$fonts/roboto-regular.ttf';
+        'test/fonts/Roboto-Regular.ttf';
     final loader = FontLoader('Roboto')
       ..addFont(
         Future.value(ByteData.sublistView(await File(font).readAsBytes())),
       );
     await loader.load();
+    final iconFile = Directory(fonts).listSync().whereType<File>().firstWhere(
+      (file) =>
+          file.uri.pathSegments.last.toLowerCase() ==
+          'materialicons-regular.otf',
+    );
     final icons = FontLoader('MaterialIcons')
       ..addFont(
-        Future.value(
-          ByteData.sublistView(
-            await File('$fonts/materialicons-regular.otf').readAsBytes(),
-          ),
-        ),
+        Future.value(ByteData.sublistView(await iconFile.readAsBytes())),
       );
     await icons.load();
   });
