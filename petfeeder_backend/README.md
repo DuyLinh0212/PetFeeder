@@ -2,6 +2,18 @@
 
 Node.js >=22.13 (SQLite tích hợp), Express và MQTT. Chạy `npm ci`, `npm start`; mặc định `http://127.0.0.1:3000`. Điện thoại qua LAN cần `HOST=0.0.0.0` và địa chỉ IP LAN trong app. Broker/prefix cấu hình qua `.env`; xem `.env.example` và README gốc.
 
+## Cấu trúc mã nguồn
+
+- `src/server.js`: khởi động HTTP server và nạp cấu hình môi trường.
+- `src/app.mjs`: kết nối SQLite, xử lý lệnh, MQTT và REST API.
+- `src/routes/index.mjs`: các endpoint cho thiết bị, cấp thức ăn, lịch và thông báo.
+- `src/services/feedingService.mjs`: quản lý lệnh, trạng thái, chống trùng và hạn mức.
+- `src/domain/feedingPolicy.mjs`: quy tắc an toàn và kiểm tra dữ liệu.
+- `src/storage/`: SQLite và chuyển dữ liệu JSON cũ.
+- `test/helpers/deviceSimulator.mjs`: mô hình thiết bị dành cho kiểm thử.
+
+Các module dùng ES modules (`.mjs`); entry point và cấu hình hiện có vẫn dùng CommonJS. Dữ liệu tiếp tục ở `data/main/backend.sqlite` và JSON gốc ở `data/database.json`; việc sắp xếp mã nguồn không đổi vị trí dữ liệu.
+
 ## REST API
 
 | Phương thức | Đường dẫn | Chức năng |

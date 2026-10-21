@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,rmSync} from 'node:fs';
 import {join,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Storage} from '../src/long/storage.js';
-import {Service} from '../src/long/service.js';
-import {DeviceSimulator} from '../src/long/deviceSimulator.js';
-import {defaults,config,schedules,command} from '../src/long/policy.js';
+import {Storage} from '../src/storage/database.mjs';
+import {FeedingService} from '../src/services/feedingService.mjs';
+import {DeviceSimulator} from './helpers/deviceSimulator.mjs';
+import {defaults,config,schedules,command} from '../src/domain/feedingPolicy.mjs';
 function fixture(){
   let now=Date.parse('2026-10-19T00:00:00Z')/1000; // Monday 07:00 UTC+7
   const backend=new Storage(),storage=new Storage();let device;
-  const service=new Service(backend,{mode:'DEMO',send(kind,p){if(device?.online){if(kind==='sync')device.sync(p);else device.receive(p);}}},()=>now);
+  const service=new FeedingService(backend,{mode:'DEMO',send(kind,p){if(device?.online){if(kind==='sync')device.sync(p);else device.receive(p);}}},()=>now);
   const boot=()=>{device=new DeviceSimulator(storage,e=>service.event(e),h=>service.heartbeat(h),()=>now);service.sync();device.heartbeat();return device;};
   boot();service.configure({food_confirmed:true,food_label:'Demo owner confirmation'});
   let next=0;
@@ -119,8 +119,8 @@ test('N26 event uniqueness survives closing and reopening SQLite database',()=>{
   const work=resolve(fileURLToPath(new URL('../../work/',import.meta.url)));mkdirSync(work,{recursive:true});
   const dir=mkdtempSync(join(work,'petfeeder-test-')),file=join(dir,'state.db');
   const e={event_id:'persisted-event',seq:1,status:'FOOD_LEFT',occurred_at:1800000000};
-  let db=new Storage(file),s=new Service(db,{mode:'TEST',send(){}});s.event(e);db.close();
-  db=new Storage(file);s=new Service(db,{mode:'TEST',send(){}});assert.equal(s.event(e).duplicate,true);db.close();
+  let db=new Storage(file),s=new FeedingService(db,{mode:'TEST',send(){}});s.event(e);db.close();
+  db=new Storage(file);s=new FeedingService(db,{mode:'TEST',send(){}});assert.equal(s.event(e).duplicate,true);db.close();
   assert(resolve(dir).startsWith(work+sep));rmSync(dir,{recursive:true,force:true});
 });
 test('measurement failure reports UNKNOWN and never becomes 0g food consumed',()=>{

@@ -1,5 +1,5 @@
 import {existsSync,readFileSync} from 'node:fs';
-import {config,defaults,schedules} from './policy.js';
+import {config,defaults,schedules} from '../domain/feedingPolicy.mjs';
 
 // Import once in a transaction; leave database.json byte-for-byte intact.
 export function migrateLegacy(db,file){

@@ -5,12 +5,12 @@ import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {once} from 'node:events';
-import {createIntegration} from '../src/long/integration.mjs';
+import {createBackend} from '../src/app.mjs';
 
 test('Main Flutter REST contract uses durable IDs, validates schedules and retains dedup after hiding history',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'petfeeder-main-'));
   const sent=[];let now=1792500000;
-  const integration=createIntegration({dataDir:dir,clock:()=>now,transport:{mode:'TEST',send(k,p){sent.push([k,p]);return true;}}});
+  const integration=createBackend({dataDir:dir,clock:()=>now,transport:{mode:'TEST',send(k,p){sent.push([k,p]);return true;}}});
   const app=express();app.use(express.json());app.use('/api',integration.router);
   const server=app.listen(0,'127.0.0.1');await once(server,'listening');
   const base=`http://127.0.0.1:${server.address().port}/api`;

@@ -1,11 +1,5 @@
 import express from 'express';
-import mqtt from 'mqtt';
-import {resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {Service} from './service.js';
-import {Storage} from './storage.js';
-import {migrateLegacy} from './legacyMigration.js';
-import {Invalid,object,number,identifier,dispensedStatuses} from './policy.js';
+import {Invalid,object,number,identifier,dispensedStatuses} from '../domain/feedingPolicy.mjs';
 
 const dayNames=['CN','T2','T3','T4','T5','T6','T7'];
 export function toSchedule(s,id){
@@ -18,43 +12,7 @@ export function toSchedule(s,id){
 }
 export function fromSchedule(s){return {id:s.schedule_id,name:s.name||'Lịch cho ăn',time:`${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')}`,portion_g:s.target_portion_g,days:s.days.map(d=>dayNames[d]),enabled:s.enabled};}
 
-// The main application keeps its REST envelopes and screen layout. Long's service
-// is the single source of commands/history, rather than a second device or backend.
-export function createIntegration({dataDir,legacyFile,brokerUrl,prefix='duylinh0212/petfeeder/v1',clock=()=>Math.floor(Date.now()/1000),transport:injected}={}){
-  const db=new Storage(resolve(dataDir||process.env.DATA_DIR||fileURLToPath(new URL('../../data/main/',import.meta.url)),'backend.sqlite'));
-  try {migrateLegacy(db,legacyFile??(dataDir||process.env.DATA_DIR?null:fileURLToPath(new URL('../../data/database.json',import.meta.url))));}
-  catch(error){db.close();throw error;}
-  let service,client;
-  const transport=injected||{mode:'MQTT',send(kind,body){
-    if(!client?.connected)return false;
-    client.publish(`${prefix}/${kind}`,JSON.stringify(body),{qos:1,retain:false});return true;
-  }};
-  service=new Service(db,transport,clock);
-  function onMessage(topic,body,packet={}){
-    if(packet.retain)return; // Current heartbeat and outbox events must be live.
-    const payload=JSON.parse(body.toString());
-    if(topic===`${prefix}/telemetry`)service.heartbeat(payload);
-    else if(topic===`${prefix}/events`){
-      service.event(payload); // SQLite commits before acknowledging the event.
-      client?.publish(`${prefix}/ack`,JSON.stringify({event_id:payload.event_id}),{qos:1,retain:false});
-    }
-  }
-  if(!injected){
-    client=mqtt.connect(brokerUrl||process.env.MQTT_BROKER_URL||'mqtt://broker.emqx.io:1883',{
-      clientId:`petfeeder-main-${process.pid}`,clean:true,reconnectPeriod:3000,
-      username:process.env.MQTT_USERNAME,password:process.env.MQTT_PASSWORD,
-    });
-    client.on('connect',()=>client.subscribe([`${prefix}/events`,`${prefix}/telemetry`],{qos:1},()=>service.sync()));
-    client.on('message',(topic,body,packet)=>{try{onMessage(topic,body,packet);}catch(e){console.error('[MQTT rejected]',e.message);}});
-    client.on('error',e=>console.error('[MQTT]',e.message));
-  }
-  function tick(){
-    for(const c of db.all('commands'))if(c.status==='QUEUED'){
-      if(clock()>=c.expires_at)db.put('commands',c.command_id,{...c,status:'DELIVERY_UNKNOWN',error_code:'AWAITING_DEVICE_RESULT'});
-      else transport.send('command',c);
-    }
-  }
-  const timer=setInterval(tick,1000);timer.unref();
+export function createApiRouter({db,service,clock,connected}){
   const router=express.Router();
   const ok=(res,data,extra={})=>res.json({success:true,data,...extra});
   function history(){
@@ -70,7 +28,7 @@ export function createIntegration({dataDir,legacyFile,brokerUrl,prefix='duylinh0
     const s=service.state(),h=s.device||{};
     const latest=[...db.all('commands').map(c=>({...c,timestamp:new Date((c.occurred_at||c.updated_at||c.created_at)*1000).toISOString()})),...db.all('legacy_history')]
       .filter(c=>dispensedStatuses.has(c.status)&&typeof c.actual_weight_g==='number'&&c.actual_weight_g>0).sort((a,b)=>Date.parse(b.timestamp)-Date.parse(a.timestamp))[0];
-    return {device_id:h.device_id||'petfeeder_01',online:s.connection!=='OFFLINE',mqtt_connected:injected?true:!!client?.connected,
+    return {device_id:h.device_id||'petfeeder_01',online:s.connection!=='OFFLINE',mqtt_connected:connected(),
       system_status:s.connection==='BUSY'?'DANG CHO AN...':s.connection==='OFFLINE'?'NGOAI TUYEN':h.status||'SAN SANG',
       food_level_percent:h.food_level_percent??null,distance_cm:h.distance_cm??null,bowl_weight_g:h.weight_g??null,
       sensor_mode:h.sensor_mode||'UNKNOWN',ip_address:h.ip||'',wifi_rssi:h.rssi??0,
@@ -151,5 +109,5 @@ export function createIntegration({dataDir,legacyFile,brokerUrl,prefix='duylinh0
   });
   router.delete('/notifications',(req,res)=>{db.put('hidden_alerts','state',[...db.all('events').map(e=>e.event_id),...db.all('legacy_alerts').map(a=>a.id)]);ok(res,true);});
   router.use((err,req,res,next)=>res.status(err.http||500).json({success:false,code:err.code||'INTERNAL_ERROR',field:err.field||'',message:err.message}));
-  return {router,service,db,device,onMessage,tick,connected:()=>injected?true:!!client?.connected,close(){clearInterval(timer);client?.end(true);db.close();}};
+  return {router,device};
 }

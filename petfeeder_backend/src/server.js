@@ -4,16 +4,16 @@ const path = require('node:path');
 const config = require('./config');
 
 async function startServer() {
-  const {createIntegration} = await import('./long/integration.mjs');
-  const integration=createIntegration({brokerUrl:config.mqtt.brokerUrl,prefix:process.env.MQTT_TOPIC_PREFIX||'duylinh0212/petfeeder/v1'});
+  const {createBackend} = await import('./app.mjs');
+  const integration=createBackend({brokerUrl:config.mqtt.brokerUrl,prefix:process.env.MQTT_TOPIC_PREFIX||'duylinh0212/petfeeder/v1'});
   const app=express();app.use(cors());app.use(express.json({limit:'32kb'}));
   app.use('/api',integration.router);
   app.get('/health',(req,res)=>res.json({status:'OK',mqtt_connected:integration.connected()}));
-  app.get('/api',(req,res)=>res.json({name:'PetFeeder MAIN + Long',device:'/api/device/status',schedules:'/api/schedules',feeding:'/api/feeding/feed'}));
+  app.get('/api',(req,res)=>res.json({name:'PetFeeder Backend',device:'/api/device/status',schedules:'/api/schedules',feeding:'/api/feeding/feed'}));
   app.use(express.static(path.resolve(__dirname,'../../petfeeder_app/build/web')));
   app.get('/',(req,res)=>res.redirect('/api'));
   app.use((err,req,res,next)=>res.status(err.status||500).json({success:false,code:err instanceof SyntaxError?'INVALID_JSON':'INTERNAL_ERROR',message:err.message}));
-  const server=app.listen(config.port,process.env.HOST||'127.0.0.1',()=>console.log(`PetFeeder MAIN + Long: http://${process.env.HOST||'127.0.0.1'}:${server.address().port}`));
+  const server=app.listen(config.port,process.env.HOST||'127.0.0.1',()=>console.log(`PetFeeder Backend: http://${process.env.HOST||'127.0.0.1'}:${server.address().port}`));
   const stop=()=>{server.close();integration.close();};
   process.once('SIGINT',()=>{stop();process.exit(0);});
   process.once('SIGTERM',()=>{stop();process.exit(0);});

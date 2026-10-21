@@ -1,5 +1,5 @@
 // Device model for deterministic API/integration tests. It does not simulate ESP32 electrical timing.
-import {defaults, config, schedules, command, dayKey, Invalid, sameCommand} from './policy.js';
+import {defaults, config, schedules, command, dayKey, Invalid, sameCommand} from '../../src/domain/feedingPolicy.mjs';
 import {randomUUID} from 'node:crypto';
 export class DeviceSimulator {
   constructor(store, emit, heartbeat, clock=()=>Math.floor(Date.now()/1000)) {

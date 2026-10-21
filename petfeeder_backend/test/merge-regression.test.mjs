@@ -5,15 +5,15 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {once} from 'node:events';
 import express from 'express';
-import {Storage} from '../src/long/storage.js';
-import {Service} from '../src/long/service.js';
-import {DeviceSimulator} from '../src/long/deviceSimulator.js';
-import {createIntegration} from '../src/long/integration.mjs';
+import {Storage} from '../src/storage/database.mjs';
+import {FeedingService} from '../src/services/feedingService.mjs';
+import {DeviceSimulator} from './helpers/deviceSimulator.mjs';
+import {createBackend} from '../src/app.mjs';
 
 function fixture(t){
   let now=Date.parse('2026-10-19T00:00:00Z')/1000,device,n=0;
   const db=new Storage(),local=new Storage();
-  const service=new Service(db,{mode:'TEST',send(kind,body){if(device?.online){if(kind==='sync')device.sync(body);else device.receive(body);}}},()=>now);
+  const service=new FeedingService(db,{mode:'TEST',send(kind,body){if(device?.online){if(kind==='sync')device.sync(body);else device.receive(body);}}},()=>now);
   const boot=()=>{device=new DeviceSimulator(local,e=>service.event(e),h=>service.heartbeat(h),()=>now);service.sync();device.heartbeat();};
   boot();service.configure({food_confirmed:true,food_label:'Chủ xác nhận'});
   t.after(()=>{db.close();local.close();});
@@ -115,7 +115,7 @@ test('JSON migration preserves records, settings, read state and source bytes ac
     feeding_history:[{id:'old-feed',timestamp:'2026-10-19T00:00:00Z',status:'SUCCESS',actual_weight_g:19,target_portion_g:20,trigger_source:'button'}],
     alerts:[{id:'old-alert',timestamp:'2026-10-19T00:01:00Z',title:'Cảnh báo cũ',message:'Giữ nguyên',read:true,level:'info'}]};
   const bytes=JSON.stringify(old);writeFileSync(file,bytes);
-  let integration=createIntegration({dataDir:dir,legacyFile:file,transport:{mode:'TEST',send(){return true;}}});
+  let integration=createBackend({dataDir:dir,legacyFile:file,transport:{mode:'TEST',send(){return true;}}});
   assert.equal(integration.service.settings().min_interval_s,240);
   assert.equal(integration.service.settings().pulse_step_ms,650);
   const app=express();app.use(express.json());app.use('/api',integration.router);
@@ -128,7 +128,7 @@ test('JSON migration preserves records, settings, read state and source bytes ac
     assert.equal((await (await fetch(base+'/feeding/history')).json()).data.length,0);
     assert.equal(integration.db.all('legacy_history').length,1);
   }finally{await new Promise(r=>server.close(r));integration.close();}
-  integration=createIntegration({dataDir:dir,legacyFile:file,transport:{mode:'TEST',send(){return true;}}});
+  integration=createBackend({dataDir:dir,legacyFile:file,transport:{mode:'TEST',send(){return true;}}});
   try{
     assert.equal(integration.db.all('legacy_history').length,1);
     assert.equal(integration.service.state().schedules[0].schedule_id,'old-schedule');
@@ -141,7 +141,7 @@ test('invalid legacy schedules abort migration without replacing the source or c
   const bytes=JSON.stringify({device_config:{safe_interval_sec:240},schedules:[{id:'bad',name:'Lịch lỗi',time:'25:00',portion_g:20,days:['T2'],enabled:true}]});
   writeFileSync(file,bytes);
   try{
-    assert.throws(()=>createIntegration({dataDir:dir,legacyFile:file,transport:{mode:'TEST',send(){}}}),/INVALID_FIELD/);
+    assert.throws(()=>createBackend({dataDir:dir,legacyFile:file,transport:{mode:'TEST',send(){}}}),/INVALID_FIELD/);
     const db=new Storage(join(dir,'backend.sqlite'));
     try{assert.equal(db.get('migrations','legacy-json-v1'),null);assert.equal(db.get('config'),null);assert.equal(db.get('schedules'),null);}
     finally{db.close();}

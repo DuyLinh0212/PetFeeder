@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {Aedes} from 'aedes';
 import mqtt from 'mqtt';
-import {createIntegration} from '../src/long/integration.mjs';
+import {createBackend} from '../src/app.mjs';
 
 const waitFor=async fn=>{for(let n=0;n<150;n++){if(fn())return;await new Promise(r=>setTimeout(r,20));}throw new Error('MQTT condition timed out');};
 test('Main MQTT prefix: command reaches device, ack follows durable dedup, restart rejects retained events',async()=>{
@@ -24,7 +24,7 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
   await new Promise((resolve,reject)=>device.subscribe([`${prefix}/command`,`${prefix}/sync`,`${prefix}/ack`],{qos:1},e=>e?reject(e):resolve()));
   const publish=(topic,body,retain=false)=>new Promise((resolve,reject)=>device.publish(`${prefix}/${topic}`,JSON.stringify(body),{qos:1,retain},e=>e?reject(e):resolve()));
   try{
-    integration=createIntegration({dataDir,brokerUrl:url,prefix});
+    integration=createBackend({dataDir,brokerUrl:url,prefix});
     integration.service.configure({food_confirmed:true,food_label:'Main owner confirmation'});
     await waitFor(()=>integration.connected());
     const now=Math.floor(Date.now()/1000);
@@ -44,7 +44,7 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
     integration.close();integration=null;
     await new Promise(r=>setTimeout(r,100));
     await publish('events',{...e,event_id:'retained-replay',command_id:'retained-session'},true);
-    integration=createIntegration({dataDir,brokerUrl:url,prefix});
+    integration=createBackend({dataDir,brokerUrl:url,prefix});
     await waitFor(()=>integration.connected());
     await new Promise(r=>setTimeout(r,100));
     assert.equal(integration.db.get('events','retained-replay'),null);
