@@ -1,671 +1,410 @@
+// Main circuit by Danh, extended with Long's persistent command/schedule controller.
+// One ESP32, both original servos, OLED, LEDs, buzzer and the original pin mapping.
 #include <Arduino.h>
-#include <Wire.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <LittleFS.h>
+#include <HX711.h>
+#include <time.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <ESP32Servo.h>
-#include "HX711.h"
-#include <time.h>
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#include "secrets.example.h"
+#endif
 
-// ===================== CẤU HÌNH PHẦN CỨNG & CHÂN (PIN MAPPING) =====================
-#define PIN_TRIG        5
-#define PIN_ECHO        18
-#define PIN_HX711_DT    19
-#define PIN_HX711_SCK   23
-#define PIN_BUTTON      4
-#define PIN_SERVO_FEED  13
-#define PIN_SERVO_ANTI  12
-#define PIN_LED_GREEN   2
-#define PIN_LED_RED     15
-#define PIN_BUZZER      14
-
-// OLED 0.96 inch SSD1306 I2C (SDA = GPIO 21, SCL = GPIO 22)
-#define SCREEN_WIDTH    128
-#define SCREEN_HEIGHT   64
-#define OLED_RESET      -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-Servo servoFeed;
-Servo servoAnti;
+constexpr int SERVO_PIN=13, ANTI_PIN=12, BUTTON_PIN=4, DT_PIN=19, SCK_PIN=23;
+constexpr int TRIG_PIN=5, ECHO_PIN=18, GREEN_PIN=2, RED_PIN=15, BUZZER_PIN=14;
+Adafruit_SSD1306 display(128,64,&Wire,-1);
+bool oledOK=false,simAuto=false,simJam=false;
+float distanceCM=12,pulseBaseline=0;
+unsigned long distanceAt=0,displayAt=0,antiAt=0,buzzUntil=0;
+int jamRetries=0,antiStep=0;
+String uiStatus="KHOI DONG";
+void toneNotice(unsigned long duration=100){digitalWrite(BUZZER_PIN,HIGH);buzzUntil=millis()+duration;}
+void antiServo(int angle){ledcWrite(1,(uint32_t)((500+angle*2000/180)*65535UL/20000));}
+void servoAngle(int angle){ledcWrite(0,(uint32_t)((500+angle*2000/180)*65535UL/20000));}
+constexpr size_t MAX_EVENTS=96, MAX_HISTORY=32;
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
 HX711 scale;
-
-// Thông số bồn chứa & cảm biến
-const float HOP_CHUA_CAO_CM   = 25.0;  // Chiều cao tối đa của hộp chứa
-const float NGUONG_HET_HAT_CM = 20.0;  // Khoảng cách tới hạt >= 20cm là hết hạt
-
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-// Wokwi không tự thay đổi HC-SR04/HX711 khi servo quay. Mô phỏng một hộp
-// 500g đang có khoảng 52% hạt (khớp distance 12cm trong diagram.json).
-const float SIM_HOPPER_CAPACITY_G = 500.0;
-const float SIM_INITIAL_HOPPER_G  = 500.0;
-const float SIM_PULSE_GRAMS       = 5.0;
-float simulatedHopperGrams        = SIM_INITIAL_HOPPER_G;
-float simulatedBowlWeightGrams    = 0.0;
-#endif
-
-// ===================== CẤU HÌNH MẠNG & MQTT =====================
-// Mô phỏng Wokwi dùng WiFi ảo "Wokwi-GUEST", không mật khẩu
-const char* WIFI_SSID     = "Wokwi-GUEST";
-const char* WIFI_PASSWORD = "";
-
-// Public MQTT broker dùng chung cho Wokwi Community và backend.
-// Đổi sang broker riêng có authentication khi triển khai production.
-#define MQTT_SERVER       "broker.emqx.io"
-#define MQTT_PORT         1883
-#define MQTT_CLIENT_ID    "ESP32_PetFeeder_Client"
-#define MQTT_TOPIC_PREFIX "duylinh0212/petfeeder/v1"
-
-// MQTT Topics
-const char* TOPIC_COMMAND   = MQTT_TOPIC_PREFIX "/command";
-const char* TOPIC_SCHEDULES = MQTT_TOPIC_PREFIX "/schedules/sync";
-const char* TOPIC_CONFIG    = MQTT_TOPIC_PREFIX "/config";
-const char* TOPIC_TELEMETRY = MQTT_TOPIC_PREFIX "/telemetry";
-const char* TOPIC_EVENTS    = MQTT_TOPIC_PREFIX "/events";
-const char* TOPIC_ALERTS    = MQTT_TOPIC_PREFIX "/alerts";
-
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
-String mqttClientId = MQTT_CLIENT_ID;
-
-// ===================== QUẢN LÝ LỊCH CỤC BỘ (FR-04) =====================
-struct LocalSchedule {
-  char id[20];
-  int hour;
-  int minute;
-  int portion;
-  bool enabled;
-  int lastTriggerDay;
-};
-
-#define MAX_SCHEDULES 10
-LocalSchedule localSchedules[MAX_SCHEDULES];
-int scheduleCount = 0;
-
-// ===================== BIẾN TRẠNG THÁI & CHỐNG ĂN TRÙNG =====================
-unsigned long lastFeedSuccessMs = 0;
-unsigned long safeIntervalMs    = 180000; // Mặc định 180s (3 phút) theo Section 2.3.2
-String systemStatus             = "KHOI DONG";
-
-// Nút bấm
-unsigned long buttonPressTime = 0;
-bool isButtonPressed         = false;
-
-// Chu kỳ cập nhật
-unsigned long lastDisplayUpdate   = 0;
-unsigned long lastTelemetryUpdate = 0;
-unsigned long lastMQTTReconnect   = 0;
-
-// Nguyên mẫu hàm
-void beep(int count, int delayMs);
-float readDistanceCM();
-float readWeightGram();
-void updateOLED(float distance, float weight, String status);
-void triggerAntiJam();
-bool performFeeding(int targetPortion, bool isOverride, String source);
-void setupWiFi();
-void reconnectMQTT();
-void mqttCallback(char* topic, byte* message, unsigned int length);
-void publishTelemetry();
-void publishFeedEvent(String status, String source, int targetPortion, float actualWeight, String message);
-void checkLocalSchedules();
-
-// ===================== ÂM THANH BUZZER =====================
-void beep(int count, int delayMs) {
-  for (int i = 0; i < count; i++) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    delay(delayMs);
-    digitalWrite(PIN_BUZZER, LOW);
-    if (i < count - 1) delay(delayMs);
-  }
+JsonDocument state;
+bool storageOK=false,weightOK=false,busy=false,motorOpen=false;
+float weightG=0,lastSample=0;
+unsigned long sampleAt=0,stableAt=0,beatAt=0,publishAt=0,connectAt=0,scanAt=0;
+unsigned long feedAt=0,servoAt=0;
+unsigned long scanSavedAt=0;
+String serialLine;
+String bootId;
+String root=MQTT_TOPIC_PREFIX;
+bool validTime(){return time(nullptr)>1700000000;}
+long nowSec(){return (long)time(nullptr);}
+void servo(bool open){motorOpen=open;servoAngle(open?90:0);}
+void updatePanel(){
+  digitalWrite(GREEN_PIN,busy&&!antiStep);
+  digitalWrite(RED_PIN,!storageOK||state["locked"].as<bool>()||antiStep||uiStatus=="JAM_ERROR");
+  if(buzzUntil&&(long)(millis()-buzzUntil)>=0){digitalWrite(BUZZER_PIN,LOW);buzzUntil=0;}
+  if(!oledOK||millis()-displayAt<500)return;displayAt=millis();
+  display.clearDisplay();display.setTextColor(SSD1306_WHITE);display.setTextSize(1);display.setCursor(0,0);
+  display.println("PETFEEDER NHOM 7");display.print("Hat: ");if(isfinite(distanceCM)&&storageOK)display.print((int)constrain((1-distanceCM/state["config"]["tank_height_cm"].as<float>())*100,0.0f,100.0f));else display.print("?");display.println("%");
+  display.print("Bat: ");if(weightOK)display.print(weightG,1);else display.print("?");display.println(" g");
+  display.print("TT: ");display.println(!storageOK?"STORAGE LOCK":busy?(antiStep?"GO KET":"DANG CAP"):uiStatus);
+  display.print("MQTT: ");display.println(mqtt.connected()?"ON":"OFF");
+  display.print(simAuto?"DEMO AUTO":"HX711 MANUAL");display.display();
 }
 
-// ===================== ĐỌC CẢM BIẾN =====================
-float readDistanceCM() {
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-  float level = constrain(simulatedHopperGrams / SIM_HOPPER_CAPACITY_G, 0.0, 1.0);
-  return HOP_CHUA_CAO_CM * (1.0 - level);
-#else
-  digitalWrite(PIN_TRIG, LOW);
-  delayMicroseconds(2);
-  digitalWrite(PIN_TRIG, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(PIN_TRIG, LOW);
-  
-  long duration = pulseIn(PIN_ECHO, HIGH, 30000);
-  if (duration == 0) return HOP_CHUA_CAO_CM;
-  float dist = duration * 0.034 / 2.0;
-  return constrain(dist, 2.0, HOP_CHUA_CAO_CM);
-#endif
-}
-
-float readWeightGram() {
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-  return simulatedBowlWeightGrams;
-#else
-  if (scale.is_ready()) {
-    long reading = scale.get_units(2);
-    float weight = (float)reading / 420.0;
-    if (weight < 0.0) weight = 0.0;
-    return weight;
+bool persist(){
+  if(!storageOK)return false;
+  File f=LittleFS.open("/state.tmp","w");
+  if(!f)return storageOK=false;
+  const size_t expected=measureJson(state),written=serializeJson(state,f);
+  f.flush();f.close();
+  if(written!=expected || !LittleFS.rename("/state.tmp","/state.json")){
+    servo(false);storageOK=false;Serial.println("STORAGE_ERROR: actuator locked");return false;
   }
-  return 0.0;
-#endif
-}
-
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-void simulateDispensePulse(int targetPortion, float initialWeight, float currentWeight) {
-  float delivered = currentWeight - initialWeight;
-  float remaining = targetPortion - delivered;
-  if (remaining <= 0.0 || simulatedHopperGrams <= 0.0) return;
-
-  float dispensed = min(SIM_PULSE_GRAMS, min(remaining, simulatedHopperGrams));
-  simulatedHopperGrams -= dispensed;
-  simulatedBowlWeightGrams += dispensed;
-
-  Serial.printf("[SIM] Da mo phong %.1fg | Kho con: %.1fg | Bat: %.1fg\n",
-                dispensed, simulatedHopperGrams, simulatedBowlWeightGrams);
-}
-#endif
-
-// ===================== MÀN HÌNH OLED =====================
-void updateOLED(float distance, float weight, String status) {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextWrap(false);
-
-  // Header
-  display.setTextSize(1);
-  display.setCursor(10, 0);
-  display.print("PET FEEDER - IOT");
-  
-  // Icon Wi-Fi & MQTT
-  if (WiFi.status() == WL_CONNECTED) {
-    display.setCursor(116, 0);
-    display.print(mqttClient.connected() ? "M" : "W");
-  }
-  display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
-
-  // Mức hạt
-  display.setCursor(0, 13);
-  display.print("Hat: ");
-  if (distance >= NGUONG_HET_HAT_CM) {
-    display.print("HET HAT");
-  } else {
-    int percent = constrain((int)((HOP_CHUA_CAO_CM - distance) / HOP_CHUA_CAO_CM * 100), 0, 100);
-    display.print(percent);
-    display.print("% ");
-    display.print((int)distance);
-    display.print("cm");
-  }
-
-  // Khối lượng bát
-  display.setCursor(0, 26);
-  display.print("Bat: ");
-  display.print(weight, 1);
-  display.print(" g");
-
-  // Trạng thái hệ thống
-  display.setCursor(0, 39);
-  display.print("TT: ");
-  if (status.length() > 15) status = status.substring(0, 15);
-  display.print(status);
-
-  // Hướng dẫn thao tác tại chỗ
-  display.drawLine(0, 52, 128, 52, SSD1306_WHITE);
-  display.setCursor(0, 55);
-  display.print("Nhan=AN  Giu=OVR");
-
-  display.display();
-}
-
-// ===================== CƠ CẤU CHỐNG KẸT (ANTI-JAM RECOVERY) =====================
-void triggerAntiJam() {
-  Serial.println("[ANTI-JAM] Phat hien nghi ket hat! Kich hoat co cau tu phuc hoi...");
-  systemStatus = "XU LY KET!";
-  updateOLED(readDistanceCM(), readWeightGram(), systemStatus);
-  
-  digitalWrite(PIN_LED_RED, HIGH);
-  beep(3, 80);
-
-  // Đảo chiều Servo chính (Section 2.3.3)
-  servoFeed.write(120);
-  delay(200);
-
-  // Lắc cơ cấu chống kẹt phụ 3 lần liên tiếp (Section 2.3.3)
-  for (int i = 0; i < 3; i++) {
-    servoAnti.write(45);
-    delay(150);
-    servoAnti.write(135);
-    delay(150);
-  }
-  servoAnti.write(90);
-  servoFeed.write(0);
-  
-  digitalWrite(PIN_LED_RED, LOW);
-}
-
-// ===================== LUỒNG CẤP THỨC ĂN (FEEDING CONTROLLER) =====================
-bool performFeeding(int targetPortion, bool isOverride, String source) {
-  unsigned long now = millis();
-  float distance = readDistanceCM();
-  float initialWeight = readWeightGram();
-
-  Serial.printf("\n>>> [FEED REQUEST] Nguon: %s | Khau phan: %dg | Override: %s\n",
-                source.c_str(), targetPortion, isOverride ? "YES" : "NO");
-
-  // Bước 2: Kiểm tra chống cho ăn trùng (Section 2.3.2)
-  if (!isOverride && lastFeedSuccessMs > 0 && (now - lastFeedSuccessMs < safeIntervalMs)) {
-    unsigned long elapsedSec = (now - lastFeedSuccessMs) / 1000;
-    Serial.printf("[BLOCKED] Cho an cach day %ds (nguong %ds). Bi chan!\n", elapsedSec, safeIntervalMs / 1000);
-    
-    systemStatus = "BLOCKED - VUA AN";
-    updateOLED(distance, initialWeight, systemStatus);
-    
-    // Phản hồi tại chỗ: LED Đỏ chớp 2 lần, Buzzer bíp 2 tiếng (Section 2.3.2)
-    for (int i = 0; i < 2; i++) {
-      digitalWrite(PIN_LED_RED, HIGH);
-      digitalWrite(PIN_BUZZER, HIGH);
-      delay(100);
-      digitalWrite(PIN_LED_RED, LOW);
-      digitalWrite(PIN_BUZZER, LOW);
-      delay(100);
-    }
-
-    publishFeedEvent("BLOCKED", source, targetPortion, 0, "Lenh bi chan do vua moi cho an!");
-    delay(1500);
-    systemStatus = "SAN SANG";
-    return false;
-  }
-
-  // Bước 3: Kiểm tra mức thức ăn trong hộp (Section 2.3.1)
-  if (distance >= NGUONG_HET_HAT_CM && !isOverride) {
-    Serial.println("[EMPTY] Hop chua da het hat!");
-    systemStatus = "LOI: HET HAT";
-    updateOLED(distance, initialWeight, systemStatus);
-
-    digitalWrite(PIN_LED_RED, HIGH);
-    beep(4, 150);
-    digitalWrite(PIN_LED_RED, LOW);
-
-    publishFeedEvent("EMPTY", source, targetPortion, 0, "Hop chua het thuc an!");
-    delay(1500);
-    systemStatus = "SAN SANG";
-    return false;
-  }
-
-  // Bước 4: Cấp thức ăn định lượng vòng kín (Closed-Loop Section 2.1.4)
-  systemStatus = isOverride ? "OVERRIDE FEED" : "DANG CHO AN...";
-  digitalWrite(PIN_LED_GREEN, HIGH);
-  updateOLED(distance, initialWeight, systemStatus);
-  beep(1, 150);
-
-  int jamSuspectCount = 0;
-  const int MAX_JAM_RETRIES = 3;
-  float currentWeight = initialWeight;
-  int pulses = 0;
-  const int MAX_PULSES = 20;
-
-  while ((currentWeight - initialWeight) < (float)targetPortion && pulses < MAX_PULSES) {
-    pulses++;
-    float weightBeforePulse = currentWeight;
-
-    // Nhịp xoay nhả hạt
-    servoFeed.write(90);
-    delay(500);
-    servoFeed.write(0);
-    delay(400);
-
-#if defined(PETFEEDER_WOKWI_SIMULATION)
-    simulateDispensePulse(targetPortion, initialWeight, currentWeight);
-#endif
-    currentWeight = readWeightGram();
-    float pulseGain = currentWeight - weightBeforePulse;
-    Serial.printf("[PULSE %d] Can nang: %.1fg (+%.1fg)\n", pulses, currentWeight, pulseGain);
-
-    // Cập nhật ngay sau mỗi xung để Mobile/backend thấy mức hạt giảm theo thời gian thực.
-    publishTelemetry();
-
-    // Kiểm tra kẹt hạt: khối lượng không tăng đáng kể (Section 2.3.3)
-    if (pulseGain < 1.0) {
-      jamSuspectCount++;
-      Serial.printf("[CANH BAO] Tang khoi luong thap (<1g). Lan nghi ket: %d/%d\n", jamSuspectCount, MAX_JAM_RETRIES);
-      
-      triggerAntiJam();
-
-      if (jamSuspectCount >= MAX_JAM_RETRIES) {
-        // Chuyển sang JAM ERROR nghiêm trọng
-        systemStatus = "LOI KET HAT";
-        updateOLED(distance, currentWeight, systemStatus);
-        digitalWrite(PIN_LED_GREEN, LOW);
-        digitalWrite(PIN_LED_RED, HIGH);
-        
-        // Còi báo lỗi kéo dài
-        beep(5, 200);
-
-        float actualDispensed = currentWeight - initialWeight;
-        publishFeedEvent("JAM_ERROR", source, targetPortion, actualDispensed, "Co cau bi ket hat! Khong the cap them.");
-        delay(2000);
-        digitalWrite(PIN_LED_RED, LOW);
-        systemStatus = "SAN SANG";
-        return false;
-      }
-    } else {
-      jamSuspectCount = 0; // Đã ra hạt bình thường, reset nghi kẹt
-    }
-
-    updateOLED(distance, currentWeight, systemStatus);
-  }
-
-  // Bước 6: Kết thúc thành công
-  float totalDispensed = currentWeight - initialWeight;
-  if (totalDispensed < 0) totalDispensed = 0;
-
-  digitalWrite(PIN_LED_GREEN, LOW);
-  systemStatus = "HOAN TAT!";
-  lastFeedSuccessMs = millis();
-  beep(2, 100);
-
-  updateOLED(readDistanceCM(), currentWeight, systemStatus);
-  Serial.printf("[THANH CONG] Da cap: %.1fg / Muc tieu: %dg\n", totalDispensed, targetPortion);
-
-  publishFeedEvent("SUCCESS", source, targetPortion, totalDispensed, "Cho an thanh cong!");
-  publishTelemetry();
-  delay(1500);
-  systemStatus = "SAN SANG";
   return true;
 }
-
-// ===================== KẾT NỐI WIFI =====================
-void setupWiFi() {
-  Serial.printf("\n[WiFi] Dang ket noi toi SSID: %s\n", WIFI_SSID);
-  systemStatus = "KET NOI WIFI...";
-  updateOLED(readDistanceCM(), readWeightGram(), systemStatus);
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
+JsonObject cfg(){return state["config"].as<JsonObject>();}
+float cf(const char* key){return cfg()[key].as<float>();}
+String id(){char b[17];snprintf(b,sizeof(b),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());return String(b);}
+void defaults(){
+  JsonObject c=state["config"].to<JsonObject>();
+  c["max_portion_g"]=100;c["daily_limit_g"]=200;c["min_interval_s"]=180;
+  c["tank_height_cm"]=25;c["empty_threshold_cm"]=20;
+  c["observation_s"]=60;c["food_stale_s"]=3600;c["command_ttl_s"]=60;
+  c["feed_timeout_s"]=30;c["tolerance_g"]=2;c["timezone_offset_min"]=420;
+  c["require_pet"]=false;c["food_confirmed"]=false;c["food_label"]="";
+  state["events"].to<JsonArray>();state["history"].to<JsonArray>();state["schedules"].to<JsonArray>();
+  state["runs"].to<JsonArray>();state["observations"].to<JsonArray>();
+  state["seq"]=0;state["last_end"]=0;state["last_scan"]=0;state["locked"]=false;
+  state["used_g"]=0;state["day"]="";state["food_since"]=0;state["sim_bowl_g"]=0;state["sim_hopper_g"]=260;state["sim_auto"]=true;
+#if WOKWI_SIM
+  state["calibrated"]=true;state["offset"]=0;state["factor"]=0.42; // Wokwi 5kg: 2100 raw / 5000g
+#else
+  state["calibrated"]=false;state["offset"]=0;state["factor"]=1;
+#endif
+}
+String dayKey(long epoch){
+  time_t local=epoch+(long)cf("timezone_offset_min")*60;struct tm t;gmtime_r(&local,&t);
+  char b[12];strftime(b,sizeof(b),"%Y-%m-%d",&t);return String(b);
+}
+bool ident(JsonVariantConst v){
+  if(!v.is<const char*>())return false;String s=v.as<String>();if(!s.length()||s.length()>96)return false;
+  for(char c:s)if(!isalnum((unsigned char)c)&&c!='_'&&c!='.'&&c!=':'&&c!='-')return false;
+  return true;
+}
+bool numeric(JsonVariantConst v,float lo,float hi,bool integer=false){
+  if(v.is<bool>()||!(v.is<int>()||v.is<long>()||v.is<float>()||v.is<double>()))return false;
+  double n=v.as<double>();return isfinite(n)&&n>=lo&&n<=hi&&(!integer||floor(n)==n);
+}
+bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantConst actual=JsonVariantConst(),const char* error=nullptr){
+  if(strcmp(status,"ACCEPTED")&&strcmp(status,"DISPENSING"))uiStatus=error?error:status;
+  if(state["events"].size()>=MAX_EVENTS){servo(false);state["locked"]=true;persist();return false;}
+  JsonObject e=state["events"].as<JsonArray>().add<JsonObject>();
+  e["event_id"]=String(DEVICE_ID)+":"+id();e["seq"]=state["seq"].as<unsigned long>()+1;state["seq"]=e["seq"];
+  e["occurred_at"]=validTime()?nowSec():0;e["status"]=status;
+  if(!c.isNull() && c["command_id"].is<const char*>()){
+    e["command_id"]=c["command_id"];
+    if(c["source"].is<const char*>())e["source"]=c["source"];
+    if(numeric(c["target_portion_g"],0,500))e["target_portion_g"]=c["target_portion_g"];
+    e["actual_weight_g"].set(actual);
   }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[WiFi] Da ket noi thanh cong!");
-    Serial.print("[WiFi] IP: ");
-    Serial.println(WiFi.localIP());
-
-    // Cấu hình đồng bộ thời gian SNTP qua mạng (UTC+7 cho Việt Nam)
-    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
-  } else {
-    Serial.println("\n[WiFi] Khong the ket noi Wi-Fi! Chay che do ngoai tuyen (FR-04)");
+  if(error)e["error_code"]=error;
+  String line;serializeJson(e,line);Serial.println(line);
+  return persist();
+}
+void event(const char* status,const char* error=nullptr){emit(status,JsonVariantConst(),JsonVariantConst(),error);}
+void remember(JsonVariantConst command,const char* status,float actual,bool known=true,const char* error=nullptr){
+  JsonArray h=state["history"].as<JsonArray>();JsonObject row;
+  for(JsonObject old:h)if(old["command"]["command_id"]==command["command_id"]){row=old;break;}
+  if(row.isNull()){
+    if(h.size()>=MAX_HISTORY){
+      int expired=-1;
+      for(size_t i=0;i<h.size();i++)if(validTime()&&h[i]["command"]["expires_at"].as<long>()<=nowSec()){expired=(int)i;break;}
+      if(expired<0){servo(false);state["locked"]=true;persist();return;}
+      h.remove(expired);
+    }
+    row=h.add<JsonObject>();
+  }
+  row["command"].set(command);row["status"]=status;row["error_code"]=error;
+  if(known)row["actual_weight_g"]=actual;else row["actual_weight_g"]=nullptr;
+  row["seq"]=state["seq"];persist();
+}
+void result(JsonVariantConst c,const char* status,float actual,const char* error=nullptr,bool known=true){
+  JsonDocument val;if(known)val.set(actual);
+  remember(c,status,actual,known,error);
+  if(storageOK)emit(status,c,val.as<JsonVariantConst>(),error);
+}
+void reject(JsonVariantConst c,const char* reason){result(c,!strcmp(reason,"COMMAND_EXPIRED")?reason:"REJECTED",0,reason);}
+void finish(const char* status,const char* error=nullptr,bool known=true){
+  servo(false);antiServo(90);antiStep=0;uiStatus=status;toneNotice();JsonDocument copy;copy.set(state["active"]);auto a=copy.as<JsonObject>();
+  float actual=max(0.0f,weightG-a["baseline"].as<float>());
+  if(known)state["used_g"]=max(0.0f,state["used_g"].as<float>()-a["target_portion_g"].as<float>()+actual);
+  else state["locked"]=true;
+  state["active"]=nullptr;busy=false;state["last_end"]=validTime()?nowSec():state["last_end"].as<long>();
+  if(known&&actual>0&&state["observations"].size()<8){auto o=state["observations"].as<JsonArray>().add<JsonObject>();
+    o["command_id"]=a["command_id"];o["at"]=nowSec();o["baseline"]=weightG;}
+  result(a,status,actual,error,known);
+}
+bool commandValid(JsonVariantConst c){
+  return c.is<JsonObjectConst>()&&ident(c["command_id"])&&c["source"].is<const char*>()&&
+    (c["source"]=="APP"||c["source"]=="SCHEDULE"||c["source"]=="BUTTON")&&
+    numeric(c["target_portion_g"],1,cf("max_portion_g"))&&numeric(c["created_at"],1700000000,4102444800.0,true)&&
+    numeric(c["expires_at"],1700000000,4102444800.0,true)&&c["override"].is<bool>()&&!c["override"].as<bool>()&&
+    c["expires_at"].as<long>()>c["created_at"].as<long>()&&c["expires_at"].as<long>()-c["created_at"].as<long>()<=300;
+}
+void receive(JsonVariantConst c){
+  if(!commandValid(c)){if(ident(c["command_id"]))reject(c,"INVALID_FIELD");else event("REJECTED","INVALID_FIELD");return;}
+  if(busy&&state["active"]["command_id"]==c["command_id"]){event("BLOCKED_DUPLICATE");return;}
+  for(JsonObject old:state["history"].as<JsonArray>())if(old["command"]["command_id"]==c["command_id"]){
+    String before,after;serializeJson(old["command"],before);serializeJson(c,after);
+    // Compare semantic fields, independent of JSON field order.
+    for(const char* k:{"source","target_portion_g","created_at","expires_at","override"})if(old["command"][k]!=c[k]){event("REJECTED","COMMAND_ID_CONFLICT");return;}
+    event("BLOCKED_DUPLICATE");
+    JsonDocument val;val.set(old["actual_weight_g"]);emit(old["status"].as<const char*>(),c,val.as<JsonVariantConst>(),old["error_code"].as<const char*>());return;
+  }
+  if(!storageOK)return;
+  if(!validTime()){reject(c,"TIME_INVALID");return;}
+  long now=nowSec();
+  if(now<c["created_at"].as<long>()-10||now<state["last_end"].as<long>()){reject(c,"TIME_INVALID");return;}
+  if(now>=c["expires_at"].as<long>()){reject(c,"COMMAND_EXPIRED");return;}
+  if(state["history"].size()>=MAX_HISTORY){
+    bool space=false;
+    for(JsonObject old:state["history"].as<JsonArray>())if(old["command"]["expires_at"].as<long>()<=now){space=true;break;}
+    if(!space){event("REJECTED","HISTORY_FULL");return;}
+  }
+  if(state["locked"].as<bool>()||state["events"].size()>MAX_EVENTS-6){reject(c,"RECONCILIATION_REQUIRED");return;}
+  if(busy){reject(c,"BUSY");return;}
+  if(cfg()["require_pet"].as<bool>()){reject(c,"UNKNOWN_PET");return;}
+  if(!cfg()["food_confirmed"].as<bool>()){reject(c,"UNVERIFIED");return;}
+  if(!state["calibrated"].as<bool>()||!weightOK||millis()-stableAt<500){reject(c,"SENSOR_ERROR");return;}
+  if(now-state["last_end"].as<long>()<cf("min_interval_s")){reject(c,"COOLDOWN");return;}
+  String day=dayKey(now);
+  if(state["day"].as<String>()!=day){state["day"]=day;state["used_g"]=0;}
+  float target=c["target_portion_g"].as<float>();
+  if(state["used_g"].as<float>()+target>cf("daily_limit_g")){reject(c,"DAILY_LIMIT");return;}
+  if(!isfinite(distanceCM)){reject(c,"SENSOR_ERROR");return;}
+  if(distanceCM>=cf("empty_threshold_cm")){reject(c,"FOOD_EMPTY");return;}
+  state["active"].set(c);state["active"]["baseline"]=weightG;state["active"]["started_at"]=now;
+  state["used_g"]=state["used_g"].as<float>()+target;
+  remember(c,"DISPENSING",0);
+  if(!storageOK)return;busy=true;feedAt=millis();servoAt=millis();pulseBaseline=weightG;jamRetries=0;antiStep=0;uiStatus="DANG CAP";servo(true);toneNotice();
+  JsonDocument zero;zero.set(0);emit("ACCEPTED",c,zero.as<JsonVariantConst>());emit("DISPENSING",c,zero.as<JsonVariantConst>());
+}
+bool configValid(JsonVariantConst c){
+  if(!c.is<JsonObjectConst>())return false;
+  struct Bound{const char* key;float lo,hi;};
+  Bound bs[]={{"tank_height_cm",5,100},{"empty_threshold_cm",2,100},{"max_portion_g",1,500},{"daily_limit_g",1,2000},{"min_interval_s",1,86400},
+    {"observation_s",5,86400},{"food_stale_s",5,604800},{"command_ttl_s",5,300},
+    {"feed_timeout_s",5,120},{"tolerance_g",0.1,10},{"timezone_offset_min",-720,840}};
+  for(auto b:bs)if(!numeric(c[b.key],b.lo,b.hi,strcmp(b.key,"tolerance_g")!=0))return false;
+  return c["require_pet"].is<bool>()&&c["food_confirmed"].is<bool>()&&c["food_label"].is<const char*>()&&
+    strlen(c["food_label"].as<const char*>())<=80&&(!c["food_confirmed"].as<bool>()||strlen(c["food_label"].as<const char*>())>0)&&
+    c["empty_threshold_cm"].as<float>()<=c["tank_height_cm"].as<float>()&&
+    c["max_portion_g"].as<float>()<=c["daily_limit_g"].as<float>()&&c["tolerance_g"].as<float>()<c["max_portion_g"].as<float>();
+}
+bool scheduleValid(JsonVariantConst items,float maxPortion){
+  if(!items.is<JsonArrayConst>()||items.size()>8)return false;
+  for(JsonObjectConst s:items.as<JsonArrayConst>()){
+    if(!ident(s["schedule_id"])||!numeric(s["hour"],0,23,true)||!numeric(s["minute"],0,59,true)||
+      !numeric(s["target_portion_g"],1,maxPortion)||!s["enabled"].is<bool>()||!s["days"].is<JsonArrayConst>()||s["days"].size()==0||s["days"].size()>7)return false;
+    int mask=0;for(JsonVariantConst d:s["days"].as<JsonArrayConst>()){
+      if(!numeric(d,0,6,true)||(mask&(1<<d.as<int>())))return false;mask|=1<<d.as<int>();}
+    int count=0;for(JsonObjectConst other:items.as<JsonArrayConst>())if(other["schedule_id"]==s["schedule_id"])count++;
+    if(count!=1)return false;
+  }return true;
+}
+void callback(char* topic,byte* payload,unsigned int length){
+  JsonDocument d;if(deserializeJson(d,payload,length)){event("REJECTED","INVALID_JSON");return;}
+  String t(topic);
+  if(t==root+"/ack"){
+    if(state["events"].size()&&state["events"][0]["event_id"]==d["event_id"]){state["events"].as<JsonArray>().remove(0);persist();}return;
+  }
+  if(t==root+"/command"){receive(d.as<JsonVariantConst>());return;}
+  if(t==root+"/sync"){
+    if(!configValid(d["config"])||!scheduleValid(d["schedules"],d["config"]["max_portion_g"].as<float>())){event("REJECTED","INVALID_CONFIG_OR_SCHEDULE");return;}
+    if(busy){event("REJECTED","CONFIG_BUSY");return;}
+    // Keep last_scan/runs and daily reservation. A config sync never resets execution marks.
+    state["config"].set(d["config"]);state["schedules"].set(d["schedules"]);state["config_version"]=d["version"];persist();event("CONFIG_APPLIED");
   }
 }
-
-// ===================== KẾT NỐI MQTT =====================
-void reconnectMQTT() {
-  if (mqttClient.connected() || WiFi.status() != WL_CONNECTED) return;
-
-  unsigned long now = millis();
-  if (now - lastMQTTReconnect < 4000) return; // Thử lại mỗi 4s
-  lastMQTTReconnect = now;
-
-  Serial.printf("[MQTT] Dang ket noi toi Broker: %s:%d...\n", MQTT_SERVER, MQTT_PORT);
-  if (mqttClient.connect(mqttClientId.c_str())) {
-    Serial.println("[MQTT] Da ket noi thanh cong!");
-
-    // Subscribe các topic điều khiển
-    mqttClient.subscribe(TOPIC_COMMAND);
-    mqttClient.subscribe(TOPIC_SCHEDULES);
-    mqttClient.subscribe(TOPIC_CONFIG);
-
-    Serial.println("[MQTT] Da dang ky cac topic nhan lenh");
-    beep(1, 80);
-  } else {
-    Serial.printf("[MQTT] Ket noi that bai, ma loi rc=%d\n", mqttClient.state());
-  }
-}
-
-// ===================== XỬ LÝ MESSAGE TỪ BACKEND QUA MQTT =====================
-void mqttCallback(char* topic, byte* message, unsigned int length) {
-  String payload = "";
-  for (unsigned int i = 0; i < length; i++) {
-    payload += (char)message[i];
-  }
-  Serial.printf("\n[MQTT IN] Topic: %s | Payload: %s\n", topic, payload.c_str());
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.printf("[MQTT Error] JSON khong hop le: %s\n", err.c_str());
-    return;
-  }
-
-  // 1. Nhận lệnh cho ăn ngay (FR-08)
-  if (String(topic) == TOPIC_COMMAND) {
-    String cmd = doc["command"] | "";
-    if (cmd == "FEED") {
-      int portion = doc["portion"] | 30;
-      bool override = doc["override"] | false;
-      String src = doc["source"] | "app";
-      performFeeding(portion, override, src);
+void scanSchedules(){
+  if(!validTime()||busy||!storageOK)return;
+  long now=nowSec(),since=state["last_scan"].as<long>();if(!since)since=now-60;if(now<since)return;
+  long start=max(since,now-7*86400L),offset=(long)cf("timezone_offset_min")*60;
+  long first=(start+offset)/86400*86400-offset;
+  for(long midnight=first;midnight<=now;midnight+=86400){
+    time_t local=midnight+offset;struct tm t;gmtime_r(&local,&t);
+    for(JsonObject s:state["schedules"].as<JsonArray>()){
+      if(!s["enabled"].as<bool>())continue;bool chosen=false;
+      for(int day:s["days"].as<JsonArray>())if(day==t.tm_wday)chosen=true;
+      long due=midnight+s["hour"].as<int>()*3600+s["minute"].as<int>()*60;
+      if(!chosen||due<=since||due>now)continue;
+      String key=s["schedule_id"].as<String>()+":"+dayKey(due);bool done=false;
+      for(String old:state["runs"].as<JsonArray>())if(old==key)done=true;if(done)continue;
+      JsonArray runs=state["runs"].as<JsonArray>();if(runs.size()>=64)runs.remove(0);runs.add(key);
+      if(!persist())return;
+      if(now-due>=60){event("MISSED_SCHEDULE",key.c_str());continue;}
+      JsonDocument c;c["command_id"]="sch:"+key;c["source"]="SCHEDULE";c["target_portion_g"]=s["target_portion_g"];
+      c["created_at"]=now;c["expires_at"]=now+(int)cf("command_ttl_s");c["override"]=false;receive(c.as<JsonVariantConst>());
     }
   }
-
-  // 2. Nhận đồng bộ lịch từ Backend (FR-04)
-  else if (String(topic) == TOPIC_SCHEDULES) {
-    JsonArray arr = doc["schedules"].as<JsonArray>();
-    scheduleCount = 0;
-    for (JsonObject obj : arr) {
-      if (scheduleCount >= MAX_SCHEDULES) break;
-      const char* t = obj["time"] | "00:00";
-      int p = obj["portion"] | 30;
-      bool en = obj["enabled"] | true;
-      const char* id = obj["id"] | "";
-
-      int h = 0, m = 0;
-      sscanf(t, "%d:%d", &h, &m);
-
-      strncpy(localSchedules[scheduleCount].id, id, sizeof(localSchedules[scheduleCount].id));
-      localSchedules[scheduleCount].hour = h;
-      localSchedules[scheduleCount].minute = m;
-      localSchedules[scheduleCount].portion = p;
-      localSchedules[scheduleCount].enabled = en;
-      localSchedules[scheduleCount].lastTriggerDay = -1;
-      scheduleCount++;
-    }
-    Serial.printf("[SCHEDULES] Da dong bo %d lich cho an cuc bo!\n", scheduleCount);
-  }
-
-  // 3. Nhận cấu hình thiết bị
-  else if (String(topic) == TOPIC_CONFIG) {
-    if (doc["config"]["safe_interval_sec"]) {
-      safeIntervalMs = (unsigned long)doc["config"]["safe_interval_sec"] * 1000;
-      Serial.printf("[CONFIG] Cap nhat nguong an toan safeIntervalMs = %lu\n", safeIntervalMs);
-    }
-  }
+  state["last_scan"]=now;
+  if(millis()-scanSavedAt>=30000){scanSavedAt=millis();persist();}
 }
-
-// ===================== GỬI TELEMETRY =====================
-void publishTelemetry() {
-  if (!mqttClient.connected()) return;
-
-  float dist = readDistanceCM();
-  float weight = readWeightGram();
-  int percent = constrain((int)((HOP_CHUA_CAO_CM - dist) / HOP_CHUA_CAO_CM * 100), 0, 100);
-
-  JsonDocument doc;
-  doc["device_id"]          = "petfeeder_01";
-  doc["distance_cm"]        = round(dist * 10) / 10.0;
-  doc["food_level_percent"] = percent;
-  doc["bowl_weight_g"]      = round(weight * 10) / 10.0;
-  doc["status"]             = systemStatus;
-  doc["ip"]                 = WiFi.localIP().toString();
-  doc["rssi"]               = WiFi.RSSI();
-  doc["uptime"]             = millis() / 1000;
-
-  char buffer[256];
-  serializeJson(doc, buffer);
-  // Retain bản mới nhất để backend nhận lại ngay sau khi reconnect.
-  mqttClient.publish(TOPIC_TELEMETRY, buffer, true);
+void heartbeat(){
+  JsonDocument h;h["device_id"]=DEVICE_ID;h["status"]=busy?"DANG CHO AN...":uiStatus;
+  if(isfinite(distanceCM)){h["distance_cm"]=distanceCM;h["food_level_percent"]=(int)constrain((1-distanceCM/cf("tank_height_cm"))*100,0.0f,100.0f);}else{h["distance_cm"]=nullptr;h["food_level_percent"]=nullptr;}
+  if(weightOK)h["bowl_weight_g"]=weightG;else h["bowl_weight_g"]=nullptr;
+  h["sensor_mode"]=simAuto?"DEMO_AUTO":"HX711_MANUAL";h["ip"]=WiFi.localIP().toString();h["rssi"]=WiFi.RSSI();h["occurred_at"]=validTime()?nowSec():0;h["busy"]=busy;h["time_valid"]=validTime();
+  if(weightOK)h["weight_g"]=weightG;else h["weight_g"]=nullptr;
+  h["locked"]=state["locked"].as<bool>()||!storageOK;h["food_since"]=state["food_since"];
+  h["outbox"]=state["events"].size();h["mode"]="ESP32";h["boot_id"]=bootId;h["config_version"]=state["config_version"];
+  String b;serializeJson(h,b);mqtt.publish((root+"/telemetry").c_str(),b.c_str(),false);
 }
-
-// ===================== GỬI SỰ KIỆN CHO ĂN (FEED EVENT) =====================
-void publishFeedEvent(String status, String source, int targetPortion, float actualWeight, String message) {
-  if (!mqttClient.connected()) {
-    Serial.println("[MQTT] Ngoai tuyen: khong the gui feed event truc tiep");
-    return;
+void serialCommand(String line){
+  line.trim();
+#if WOKWI_SIM
+  if((line=="sim auto"||line=="sim manual")&&!busy){simAuto=line=="sim auto";state["sim_auto"]=simAuto;persist();Serial.println(simAuto?"DEMO_AUTO: synthetic dispense, not measured food":"HX711_MANUAL: change HX711 and HC-SR04 by hand");return;}
+  if((line=="sim jam on"||line=="sim jam off")&&!busy){simJam=line=="sim jam on";return;}
+  if(line=="sim empty"&&!busy&&simAuto){state["sim_bowl_g"]=0;persist();return;}
+#endif
+  if(line=="status"){heartbeat();Serial.printf("weight=%.1fg calibrated=%d time_valid=%d busy=%d\n",weightG,state["calibrated"].as<bool>(),validTime(),busy);}
+  else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("CALIBRATED: empty bowl offset saved");}
+  else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Now run tare EMPTY with empty bowl");}}
+  else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
+    state["locked"]=false;state["last_end"]=nowSec();persist();event("RECONCILED","DAILY_RESERVATION_RETAINED");}
+  else if(line=="food CONFIRMED"&&!busy){cfg()["food_confirmed"]=true;cfg()["food_label"]="Chu xac nhan qua Serial";persist();event("OWNER_FOOD_CONFIRMED");}
+  else if(line.startsWith("{")){JsonDocument d;if(!deserializeJson(d,line))receive(d.as<JsonVariantConst>());else event("REJECTED","INVALID_JSON");}
+  else Serial.println("Commands: status | food CONFIRMED | tare EMPTY | factor N | reconcile CHECKED | JSON command");
+}
+void setup(){
+  Serial.begin(115200);bootId=id();ledcSetup(0,50,16);ledcAttachPin(SERVO_PIN,0);servo(false);
+  ledcSetup(1,50,16);ledcAttachPin(ANTI_PIN,1);antiServo(90);
+  pinMode(GREEN_PIN,OUTPUT);pinMode(RED_PIN,OUTPUT);pinMode(BUZZER_PIN,OUTPUT);
+  Wire.begin(21,22);oledOK=display.begin(SSD1306_SWITCHCAPVCC,0x3c);
+  pinMode(BUTTON_PIN,INPUT_PULLUP);pinMode(TRIG_PIN,OUTPUT);pinMode(ECHO_PIN,INPUT);scale.begin(DT_PIN,SCK_PIN);
+  // Do not format on a mount error: formatting could erase anti-repeat state after a transient failure.
+  storageOK=LittleFS.begin(false);
+  if(!storageOK){Serial.println("STORAGE_NOT_INITIALIZED: send INIT_NEW_DEVICE to format ONLY a new empty device");}
+  if(storageOK&&LittleFS.exists("/state.json")){
+    File f=LittleFS.open("/state.json","r");if(deserializeJson(state,f)){storageOK=false;Serial.println("STORAGE_CORRUPT: locked");}f.close();
+  }else if(storageOK){defaults();persist();}
+  if(storageOK&&!state["active"].isNull()){
+    JsonDocument old;old.set(state["active"]);state["active"]=nullptr;state["locked"]=true;
+    result(old.as<JsonVariantConst>(),"INTERRUPTED",0,"RECONCILIATION_REQUIRED",false);
   }
-
-  JsonDocument doc;
-  doc["event"]          = "FEED_RESULT";
-  doc["status"]         = status;
-  doc["trigger_source"] = source;
-  doc["target_portion"] = targetPortion;
-  doc["actual_weight"]  = round(actualWeight * 10) / 10.0;
-  doc["message"]        = message;
-  doc["timestamp"]      = (unsigned long)time(nullptr);
-
-  char buffer[256];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_EVENTS, buffer, true);
-  Serial.printf("[MQTT OUT] Da publish event: %s\n", buffer);
+  #if WOKWI_SIM
+  simAuto=storageOK&&state["sim_auto"].as<bool>();
+#endif
+  busy=false;WiFi.mode(WIFI_STA);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
+  mqtt.setServer(MQTT_HOST,MQTT_PORT);mqtt.setCallback(callback);mqtt.setBufferSize(8192);mqtt.setSocketTimeout(1);
+  Serial.println("PetFeeder MAIN + Long ready. Serial: sim manual | sim auto | sim jam on/off | sim empty. HX711 never tares on boot. Type status for readings.");
 }
-
-// ===================== KIỂM TRA LỊCH CỤC BỘ (OFFLINE SCHEDULE - FR-04) =====================
-void checkLocalSchedules() {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) return;
-
-  int currentHour = timeinfo.tm_hour;
-  int currentMin  = timeinfo.tm_min;
-  int currentDay  = timeinfo.tm_yday;
-
-  for (int i = 0; i < scheduleCount; i++) {
-    if (localSchedules[i].enabled) {
-      if (localSchedules[i].hour == currentHour && localSchedules[i].minute == currentMin) {
-        if (localSchedules[i].lastTriggerDay != currentDay) {
-          localSchedules[i].lastTriggerDay = currentDay;
-          Serial.printf("\n[AUTO SCHEDULE] Kich hoat lich cho an: %02d:%02d (%dg)\n",
-                        currentHour, currentMin, localSchedules[i].portion);
-          performFeeding(localSchedules[i].portion, false, "schedule");
+void loop(){
+  while(Serial.available()){
+    char c=Serial.read();if(c=='\n'){
+      if(serialLine=="INIT_NEW_DEVICE"&&!storageOK){
+        if(LittleFS.format()&&LittleFS.begin(false)){storageOK=true;defaults();persist();
+#if WOKWI_SIM
+        simAuto=true;
+#endif
+        Serial.println("INITIALIZED; new device only");}
+      }else if(storageOK)serialCommand(serialLine);serialLine="";
+    }else if(c!='\r'&&serialLine.length()<4096)serialLine+=c;
+  }
+  updatePanel();
+  if(!storageOK){servo(false);delay(1);return;}
+  unsigned long ms=millis();
+  if(ms-distanceAt>=500){distanceAt=ms;
+#if WOKWI_SIM
+    if(simAuto)distanceCM=cf("tank_height_cm")*(1-state["sim_hopper_g"].as<float>()/500.0f);
+    else
+#endif
+    {digitalWrite(TRIG_PIN,LOW);delayMicroseconds(2);digitalWrite(TRIG_PIN,HIGH);delayMicroseconds(10);digitalWrite(TRIG_PIN,LOW);unsigned long echo=pulseIn(ECHO_PIN,HIGH,25000);distanceCM=echo?echo/58.0f:NAN;}
+  }
+  if(ms-sampleAt>=100){
+    sampleAt=ms;
+    #if WOKWI_SIM
+    if(simAuto){
+      if(busy&&motorOpen&&!simJam&&ms-servoAt>=450){
+        float remaining=state["active"]["target_portion_g"].as<float>()-(state["sim_bowl_g"].as<float>()-state["active"]["baseline"].as<float>());
+        float gain=max(0.0f,min(5.0f,min(remaining,state["sim_hopper_g"].as<float>())));
+        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=state["sim_hopper_g"].as<float>()-gain;servo(false);persist();Serial.printf("[DEMO_AUTO] Synthetic pulse +%.1fg\n",gain);}
+      }
+      float w=state["sim_bowl_g"].as<float>();weightOK=isfinite(w);weightG=w;
+      if(fabs(weightG-lastSample)>cf("tolerance_g"))stableAt=ms;lastSample=weightG;
+    }else
+#endif
+    if(scale.is_ready()){
+      float w=(scale.read()-state["offset"].as<long>())/state["factor"].as<float>();
+      weightOK=isfinite(w)&&w>=-2&&w<=5000;weightG=max(0.0f,w);
+      if(fabs(weightG-lastSample)>cf("tolerance_g"))stableAt=ms;lastSample=weightG;
+    }else weightOK=false;
+  }
+  if(busy){
+    if(state["locked"].as<bool>())finish("INTERRUPTED","RECONCILIATION_REQUIRED",false);
+    else if(!weightOK)finish("SENSOR_ERROR","MEASUREMENT_LOST",false);
+    else{
+      float actual=weightG-state["active"]["baseline"].as<float>(),target=state["active"]["target_portion_g"].as<float>();
+      if(actual>target+cf("tolerance_g"))finish("OVER_PORTION","OVER_PORTION");
+      else if(ms-feedAt>=(unsigned long)(cf("feed_timeout_s")*1000)&&ms-stableAt<700)finish("SENSOR_ERROR","WEIGHT_UNSTABLE",false);
+      else if(actual>=target-cf("tolerance_g")){servo(false);if(ms-stableAt>=700)finish("SUCCESS");}
+      else if(ms-feedAt>=(unsigned long)(cf("feed_timeout_s")*1000))finish(actual>0?"PARTIAL":"TIMEOUT","FEED_TIMEOUT");
+      else if(antiStep){
+        if(ms-antiAt>=150){antiAt=ms;antiStep++;antiServo(antiStep%2?45:135);
+          if(antiStep>=7){antiStep=0;antiServo(90);servo(false);servoAt=ms;pulseBaseline=weightG;
+            if(jamRetries>=3)finish("JAM_ERROR","JAM_ERROR");
+          }
         }
+      }else if(ms-servoAt>=500){
+        if(!motorOpen){
+          if(weightG-pulseBaseline<1){jamRetries++;antiStep=1;antiAt=ms;antiServo(45);servoAngle(120);toneNotice(200);Serial.printf("[ANTI-JAM] recovery %d/3\n",jamRetries);}
+          else{jamRetries=0;servo(true);}
+          pulseBaseline=weightG;
+        }else servo(false);
+        servoAt=ms;
       }
     }
   }
-}
-
-// ===================== KHỞI TẠO HỆ THỐNG (SETUP) =====================
-void setup() {
-  Serial.begin(115200);
-  Serial.println("\n=============================================");
-  Serial.println("  HE THONG CHO THU CUNG AN TU DONG - NHOM 7  ");
-  Serial.println("=============================================");
-
-  // Tránh hai phiên Wokwi dùng chung client ID làm broker đá mất kết nối.
-  uint64_t chipId = ESP.getEfuseMac();
-  mqttClientId = String(MQTT_CLIENT_ID) + "_" +
-                 String((uint32_t)(chipId >> 32), HEX) +
-                 String((uint32_t)chipId, HEX);
-  Serial.printf("[MQTT] Client ID: %s\n", mqttClientId.c_str());
-
-  pinMode(PIN_TRIG, OUTPUT);
-  pinMode(PIN_ECHO, INPUT);
-  pinMode(PIN_BUTTON, INPUT_PULLUP);
-  pinMode(PIN_LED_GREEN, OUTPUT);
-  pinMode(PIN_LED_RED, OUTPUT);
-  pinMode(PIN_BUZZER, OUTPUT);
-
-  digitalWrite(PIN_LED_GREEN, LOW);
-  digitalWrite(PIN_LED_RED, LOW);
-  digitalWrite(PIN_BUZZER, LOW);
-
-  // Gắn servo
-  servoFeed.attach(PIN_SERVO_FEED);
-  servoAnti.attach(PIN_SERVO_ANTI);
-  servoFeed.write(0);
-  servoAnti.write(90);
-
-  // Màn hình OLED
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("[LOI] Khong the tim thay man hinh OLED SSD1306!");
-  }
-  display.clearDisplay();
-
-  // Cảm biến cân nặng HX711
-  scale.begin(PIN_HX711_DT, PIN_HX711_SCK);
-  scale.set_scale();
-  scale.tare();
-
-  beep(1, 150);
-  systemStatus = "KHOI DONG";
-  updateOLED(readDistanceCM(), readWeightGram(), systemStatus);
-
-  // Khởi tạo mạng & MQTT
-  setupWiFi();
-  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
-
-  systemStatus = "SAN SANG";
-  updateOLED(readDistanceCM(), readWeightGram(), systemStatus);
-}
-
-// ===================== VÒNG LẶP CHÍNH (LOOP) =====================
-void loop() {
-  // 1. Quản lý kết nối MQTT
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!mqttClient.connected()) {
-      reconnectMQTT();
-    } else {
-      mqttClient.loop();
+  if(WiFi.status()==WL_CONNECTED){
+    if(!mqtt.connected()&&!busy&&ms-connectAt>=3000){connectAt=ms;
+      if(mqtt.connect((String("esp-")+DEVICE_ID).c_str(),MQTT_USER,MQTT_PASS)){
+        mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);heartbeat();
+      }
     }
-  }
-
-  // 2. Xử lý nút bấm vật lý (Section 2.3.1 & 2.3.2)
-  int btnState = digitalRead(PIN_BUTTON);
-  if (btnState == LOW) {
-    if (!isButtonPressed) {
-      isButtonPressed = true;
-      buttonPressTime = millis();
-    }
-  } else {
-    if (isButtonPressed) {
-      unsigned long duration = millis() - buttonPressTime;
-      isButtonPressed = false;
-      
-      // Giữ > 2.5s: Override feed (bỏ qua lọc trùng và cảnh báo hết hạt)
-      if (duration >= 2500) {
-        Serial.println("[BUTTON] Phat hien nhan giu >2.5s: Kich hoat OVERRIDE FEED!");
-        beep(1, 400); // 1 tiếng bíp dài xác nhận override
-        performFeeding(30, true, "override");
-      } 
-      // Nhấn nhả < 2.5s: Cho ăn thông thường an toàn
-      else if (duration >= 50) {
-        Serial.println("[BUTTON] Phat hien nhan nha: Kich hoat cho an tai cho!");
-        performFeeding(30, false, "button");
+    if(mqtt.connected()){
+      mqtt.loop();
+      if(ms-beatAt>=5000){beatAt=ms;heartbeat();}
+      if(ms-publishAt>=1000&&state["events"].size()){
+        publishAt=ms;String e;serializeJson(state["events"][0],e);mqtt.publish((root+"/events").c_str(),e.c_str(),false);
       }
     }
   }
-
-  // 3. Kiểm tra lịch cho ăn tự động (FR-03 & FR-04)
-  static unsigned long lastScheduleCheck = 0;
-  if (millis() - lastScheduleCheck >= 1000) {
-    lastScheduleCheck = millis();
-    checkLocalSchedules();
+  if(ms-scanAt>=1000){
+    scanAt=ms;scanSchedules();
+    static bool invalidReported=false;
+    if(!validTime()&&!invalidReported){invalidReported=true;event("TIME_INVALID");}
+    if(validTime()){
+      long now=nowSec();
+      if(weightOK&&weightG>1&&!state["food_since"].as<long>()){state["food_since"]=now;state["stale_alert"]=false;persist();}
+      if(weightOK&&weightG<=1&&state["food_since"].as<long>()){state["food_since"]=0;state["stale_alert"]=false;persist();}
+      if(weightOK&&state["food_since"].as<long>()&&!state["stale_alert"].as<bool>()&&now-state["food_since"].as<long>()>=cf("food_stale_s")){
+        state["stale_alert"]=true;event("FOOD_STALE");}
+      JsonArray obs=state["observations"].as<JsonArray>();
+      for(int i=(int)obs.size()-1;i>=0;i--)if(now-obs[i]["at"].as<long>()>=cf("observation_s")){
+        JsonDocument ref;ref["command_id"]=obs[i]["command_id"];
+        const char* status=!weightOK?"UNKNOWN":weightG<obs[i]["baseline"].as<float>()-cf("tolerance_g")?"WEIGHT_DECREASED":"FOOD_LEFT";
+        emit(status,ref.as<JsonVariantConst>(),JsonVariantConst(),!strcmp(status,"WEIGHT_DECREASED")?"UNKNOWN_CAUSE":nullptr);obs.remove(i);persist();
+      }
+    }
   }
-
-  // 4. Định kỳ gửi Telemetry qua MQTT (mỗi 3 giây)
-  if (millis() - lastTelemetryUpdate >= 3000) {
-    lastTelemetryUpdate = millis();
-    publishTelemetry();
-  }
-
-  // 5. Cập nhật màn hình OLED (mỗi 500ms)
-  if (millis() - lastDisplayUpdate >= 500) {
-    lastDisplayUpdate = millis();
-    float dist = readDistanceCM();
-    float weight = readWeightGram();
-    updateOLED(dist, weight, systemStatus);
-  }
+  static bool wasDown=false;static unsigned long pressedAt=0;
+  bool down=digitalRead(BUTTON_PIN)==LOW;
+  if(down&&!wasDown&&ms-pressedAt>100){pressedAt=ms;if(!validTime()){event("TIME_INVALID");wasDown=down;return;}JsonDocument c;c["command_id"]="btn:"+id();c["source"]="BUTTON";
+    c["target_portion_g"]=20;c["created_at"]=nowSec();c["expires_at"]=nowSec()+(int)cf("command_ttl_s");c["override"]=false;receive(c.as<JsonVariantConst>());}
+  wasDown=down;delay(1);
 }

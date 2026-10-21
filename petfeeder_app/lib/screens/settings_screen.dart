@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
+import 'safety_settings.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
@@ -29,7 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _isLoadingAlerts = true);
     try {
       final list = await ApiService().getNotifications();
-      setState(() => _alerts = list);
+      if (mounted) setState(() => _alerts = list);
     } catch (_) {
     } finally {
       if (mounted) setState(() => _isLoadingAlerts = false);
@@ -39,7 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _testConnection() async {
     setState(() => _isTesting = true);
     try {
-      ApiService().setBaseUrl(_urlController.text.trim());
+      await ApiService().setBaseUrl(_urlController.text.trim());
       final status = await ApiService().getDeviceStatus();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -62,6 +63,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) setState(() => _isTesting = false);
     }
   }
+
+  @override
+  void dispose() { _urlController.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -134,6 +138,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 20),
 
+            SafetySettings(onSaved: widget.onRefresh),
+            const SizedBox(height: 20),
             // Alert Notifications Center (FR-07)
             Row(
               children: [

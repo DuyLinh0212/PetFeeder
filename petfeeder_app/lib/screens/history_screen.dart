@@ -215,7 +215,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                       ),
                                       const SizedBox(height: 4),
                                       Text(
-                                        'Khối lượng: ${r.actualWeightG.toStringAsFixed(1)}g / ${r.targetPortionG}g',
+                                        'Khối lượng: ${r.actualWeightG == null ? 'Chưa xác định' : '${r.actualWeightG!.toStringAsFixed(1)}g'} / ${r.targetPortionG}g',
                                         style: const TextStyle(
                                           fontSize: 12,
                                           fontWeight: FontWeight.w600,

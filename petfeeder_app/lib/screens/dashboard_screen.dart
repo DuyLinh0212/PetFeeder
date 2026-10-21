@@ -21,17 +21,17 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedPortion = 30;
-  bool _isOverride = false;
   bool _isSubmitting = false;
 
   final List<int> _presetPortions = [20, 30, 45, 60, 80];
 
-  Future<void> _handleFeedNow() async {
+  Future<void> _handleFeedNow({bool retry = false}) async {
     setState(() => _isSubmitting = true);
     try {
       final res = await ApiService().feedNow(
         portion: _selectedPortion,
-        override: _isOverride,
+        override: false,
+        retry: retry,
       );
 
       if (!mounted) return;
@@ -92,15 +92,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         content: Text(message),
         actions: [
-          if (isBlockedDuplicate)
-            TextButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                setState(() => _isOverride = true);
-                _handleFeedNow();
-              },
-              child: const Text('Ghi đè & Cho ăn ngay', style: TextStyle(color: AppTheme.primary, fontWeight: FontWeight.bold)),
-            ),
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Đã hiểu'),
@@ -115,7 +106,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final status = widget.status;
     final isOnline = status?.online ?? false;
     final foodPercent = status?.foodLevelPercent ?? 0;
-    final bowlWeight = status?.bowlWeightG ?? 0.0;
+    final bowlWeight = status?.bowlWeightG;
     final systemStatus = status?.systemStatus ?? 'DANG KET NOI...';
 
     return RefreshIndicator(
@@ -128,6 +119,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             // Top Bar: Connectivity & Device Pill
             _buildDeviceStatusBar(isOnline, systemStatus),
+            Text(status?.sensorMode == 'DEMO_AUTO' ? 'DEMO tự tăng cân — số liệu mô phỏng' : 'Cân HX711 — chỉnh tải thủ công trên Wokwi'),
             const SizedBox(height: 16),
 
             // Hero: Food Hopper Tank Level Visualizer
@@ -175,16 +167,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           const SizedBox(width: 10),
-          Text(
+          Expanded(child: Text(
             isOnline ? 'ESP32 Trực tuyến' : 'ESP32 Ngoại tuyến',
             style: TextStyle(
               fontWeight: FontWeight.w700,
               fontSize: 14,
               color: isOnline ? AppTheme.textMain : AppTheme.textMuted,
             ),
-          ),
-          const Spacer(),
-          Container(
+          )),
+          const SizedBox(width: 8),
+          Flexible(child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: statusColor.withAlpha(30),
@@ -198,7 +190,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 fontSize: 12,
               ),
             ),
-          ),
+          )),
         ],
       ),
     );
@@ -225,15 +217,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 const Icon(Icons.inventory_2_outlined, color: AppTheme.primary, size: 22),
                 const SizedBox(width: 8),
-                const Text(
+                const Expanded(child: Text(
                   'Hộp chứa thức ăn',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                ),
-                const Spacer(),
-                Text(
+                )),
+                const SizedBox(width: 8),
+                Flexible(child: Text(
                   levelLabel,
                   style: TextStyle(color: levelColor, fontWeight: FontWeight.bold, fontSize: 13),
-                ),
+                )),
               ],
             ),
             const SizedBox(height: 20),
@@ -266,10 +258,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                           ),
                           const Spacer(),
-                          Text(
+                          Flexible(child: Text(
                             'Khoảng cách: ${distanceCm.toStringAsFixed(1)} cm',
                             style: const TextStyle(fontSize: 13, color: AppTheme.textMuted),
-                          ),
+                          )),
                         ],
                       ),
                       const SizedBox(height: 10),
@@ -298,7 +290,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildBowlWeightCard(double weight, String? lastFeedTime, double lastPortion) {
+  Widget _buildBowlWeightCard(double? weight, String? lastFeedTime, double lastPortion) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -326,14 +318,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     crossAxisAlignment: CrossAxisAlignment.baseline,
                     textBaseline: TextBaseline.alphabetic,
                     children: [
-                      Text(
-                        weight.toStringAsFixed(1),
+                      Flexible(child: Text(
+                        weight?.toStringAsFixed(1) ?? 'Chưa rõ',
                         style: const TextStyle(
                           fontSize: 32,
                           fontWeight: FontWeight.w800,
                           color: AppTheme.textMain,
                         ),
-                      ),
+                      )),
                       const SizedBox(width: 4),
                       const Text(
                         'gram',
@@ -368,11 +360,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 const Icon(Icons.pets_rounded, color: AppTheme.primary, size: 22),
                 const SizedBox(width: 8),
-                const Text(
+                const Expanded(child: Text(
                   'Cho thú cưng ăn ngay',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                ),
-                const Spacer(),
+                )),
+                const SizedBox(width: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
@@ -441,40 +433,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const Divider(color: AppTheme.border, height: 24),
 
-            // Override switch (Section 2.3.2)
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Chế độ Ghi đè (Override)',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: AppTheme.textMain),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Bỏ qua bảo vệ chống ăn trùng nếu vừa cho ăn xong.',
-                        style: TextStyle(fontSize: 12, color: _isOverride ? AppTheme.accentCoral : AppTheme.textMuted),
-                      ),
-                    ],
-                  ),
-                ),
-                Switch(
-                  value: _isOverride,
-                  activeTrackColor: AppTheme.accentCoral,
-                  onChanged: (val) => setState(() => _isOverride = val),
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
+            const Text('Mọi yêu cầu đều qua kiểm tra khoảng chờ, giới hạn ngày và xác nhận thức ăn.'),
+            TextButton.icon(onPressed: _isSubmitting ? null : () => _handleFeedNow(retry: true), icon: const Icon(Icons.replay), label: const Text('Gửi lại cùng mã')),
+            const SizedBox(height: 12),
 
             // Big Feed Action Button
             SizedBox(
               width: double.infinity,
               height: 54,
               child: ElevatedButton.icon(
-                onPressed: _isSubmitting ? null : _handleFeedNow,
+                onPressed: _isSubmitting || widget.status?.online != true ? null : () => _handleFeedNow(),
                 icon: _isSubmitting
                     ? const SizedBox(
                         width: 20,
@@ -483,14 +451,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       )
                     : const Icon(Icons.restaurant_rounded),
                 label: Text(
-                  _isSubmitting
-                      ? 'ĐANG GỬI LỆNH...'
-                      : _isOverride
-                          ? 'GHI ĐÈ & CẤP THỨC ĂN (${_selectedPortion}g)'
-                          : 'CẤP THỨC ĂN NGAY (${_selectedPortion}g)',
+                  _isSubmitting ? 'ĐANG GỬI LỆNH...' : 'CẤP THỨC ĂN NGAY (${_selectedPortion}g)',
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _isOverride ? AppTheme.accentCoral : AppTheme.primary,
+                  backgroundColor: AppTheme.primary,
                 ),
               ),
             ),

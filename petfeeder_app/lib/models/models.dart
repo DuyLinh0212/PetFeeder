@@ -4,7 +4,7 @@ class DeviceStatus {
   final String systemStatus;
   final int foodLevelPercent;
   final double distanceCm;
-  final double bowlWeightG;
+  final double? bowlWeightG;
   final String ipAddress;
   final int wifiRssi;
   final String? lastSeen;
@@ -13,6 +13,7 @@ class DeviceStatus {
   final String lastFeedStatus;
   final bool mqttConnected;
   final int safeIntervalSec;
+  final String sensorMode;
 
   DeviceStatus({
     required this.deviceId,
@@ -29,6 +30,7 @@ class DeviceStatus {
     required this.lastFeedStatus,
     required this.mqttConnected,
     required this.safeIntervalSec,
+    this.sensorMode = 'UNKNOWN',
   });
 
   factory DeviceStatus.fromJson(Map<String, dynamic> json) {
@@ -38,7 +40,7 @@ class DeviceStatus {
       systemStatus: json['system_status'] ?? 'SAN SANG',
       foodLevelPercent: (json['food_level_percent'] ?? 0).toInt(),
       distanceCm: (json['distance_cm'] ?? 0.0).toDouble(),
-      bowlWeightG: (json['bowl_weight_g'] ?? 0.0).toDouble(),
+      bowlWeightG: (json['bowl_weight_g'] as num?)?.toDouble(),
       ipAddress: json['ip_address'] ?? '192.168.1.1',
       wifiRssi: (json['wifi_rssi'] ?? -60).toInt(),
       lastSeen: json['last_seen'],
@@ -47,6 +49,7 @@ class DeviceStatus {
       lastFeedStatus: json['last_feed_status'] ?? 'CHUA_CHO_AN',
       mqttConnected: json['mqtt_connected'] == true,
       safeIntervalSec: (json['safe_interval_sec'] ?? 180).toInt(),
+      sensorMode: json['sensor_mode'] ?? 'UNKNOWN',
     );
   }
 }
@@ -97,7 +100,7 @@ class FeedingRecord {
   final String timestamp;
   final String triggerSource; // "app", "schedule", "button", "override"
   final int targetPortionG;
-  final double actualWeightG;
+  final double? actualWeightG;
   final String status; // "SUCCESS", "BLOCKED", "JAM_ERROR", "EMPTY"
   final String message;
   final int durationMs;
@@ -119,7 +122,7 @@ class FeedingRecord {
       timestamp: json['timestamp'] ?? DateTime.now().toIso8601String(),
       triggerSource: json['trigger_source'] ?? 'app',
       targetPortionG: (json['target_portion_g'] ?? 0).toInt(),
-      actualWeightG: (json['actual_weight_g'] ?? 0.0).toDouble(),
+      actualWeightG: (json['actual_weight_g'] as num?)?.toDouble(),
       status: json['status'] ?? 'UNKNOWN',
       message: json['message'] ?? '',
       durationMs: (json['duration_ms'] ?? 0).toInt(),

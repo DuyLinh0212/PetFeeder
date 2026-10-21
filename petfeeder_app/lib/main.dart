@@ -8,7 +8,9 @@ import 'screens/schedules_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/settings_screen.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ApiService().initialize();
   runApp(const PetFeederApp());
 }
 
@@ -21,6 +23,13 @@ class PetFeederApp extends StatelessWidget {
       title: 'PetFeeder IoT',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.themeData,
+      builder: (context, child) => ColoredBox(
+        color: AppTheme.background,
+        child: Center(child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: child,
+        )),
+      ),
       home: const MainHomeScreen(),
     );
   }
@@ -66,8 +75,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         });
       }
     } catch (_) {
-      if (mounted && !silent) {
-        setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() { _isLoading = false; _deviceStatus = null; });
       }
     }
   }

@@ -1,0 +1,97 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:petfeeder_app/services/api_service.dart';
+import 'package:petfeeder_app/models/models.dart';
+import 'package:petfeeder_app/screens/dashboard_screen.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test(
+    'N24 network failure and app restart resend identical main API command',
+    () async {
+      final payloads = <String>[];
+      final client = MockClient((req) async {
+        if (req.url.path == '/api/id') {
+          return http.Response(
+            jsonEncode({
+              'command_id': 'stable-id',
+              'now': 1792500000,
+              'ttl_s': 60,
+            }),
+            200,
+          );
+        }
+        if (req.url.path == '/api/feeding/feed') {
+          payloads.add(req.body);
+          if (payloads.length == 1) throw http.ClientException('Response lost');
+          return http.Response(
+            jsonEncode({
+              'success': true,
+              'data': {'status': 'SUCCESS'},
+              'message': 'Old result',
+            }),
+            200,
+          );
+        }
+        throw StateError('Unexpected ${req.url}');
+      });
+      final first = ApiService.testing(client, baseUrl: 'http://test');
+      await expectLater(
+        first.feedNow(portion: 20, override: false),
+        throwsA(isA<http.ClientException>()),
+      );
+      final reopened = ApiService.testing(client, baseUrl: 'http://test');
+      await reopened.feedNow(portion: 80, override: false, retry: true);
+      expect(payloads.length, 2);
+      expect(payloads[1], payloads[0]);
+      expect(jsonDecode(payloads[1])['portion'], 20);
+    },
+  );
+
+  test('N17 null actual weight stays unknown in main app history', () {
+    final row = FeedingRecord.fromJson({
+      'id': 'interrupted',
+      'status': 'INTERRUPTED',
+      'actual_weight_g': null,
+    });
+    expect(row.actualWeightG, isNull);
+    final device = DeviceStatus.fromJson({
+      'online': false,
+      'bowl_weight_g': null,
+    });
+    expect(device.bowlWeightG, isNull);
+  });
+
+  testWidgets(
+    'Main dashboard disables a new feed when backend/device is offline',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: DashboardScreen(
+              status: null,
+              isLoading: false,
+              onRefresh: () {},
+            ),
+          ),
+        ),
+      );
+      final button = find.widgetWithText(
+        ElevatedButton,
+        'CẤP THỨC ĂN NGAY (30g)',
+      );
+      expect(button, findsOneWidget);
+      expect(tester.widget<ElevatedButton>(button).onPressed, isNull);
+      expect(find.text('Chưa rõ'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+}

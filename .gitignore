@@ -26,3 +26,14 @@ GIAO_VIEC_*.md
 PHAN_CONG_*.md
 system-flow.png
 *.gs
+
+# Local runtime state and broker credentials
+**/data/
+**/.env
+**/.env.*
+!**/.env.example
+PetFeeder/include/secrets.h
+work/
+**/local.properties
+**/*.db*
+**/*.sqlite*
