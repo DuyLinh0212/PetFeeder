@@ -1,32 +1,33 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class SafetySettings extends StatefulWidget {
   final VoidCallback onSaved;
   const SafetySettings({super.key, required this.onSaved});
+
   @override
   State<SafetySettings> createState() => _SafetySettingsState();
 }
 
 class _SafetySettingsState extends State<SafetySettings> {
-  static const fields = {
-    'max_portion_g': 'Tối đa mỗi lần (g)',
-    'daily_limit_g': 'Giới hạn mỗi ngày (g)',
+  static const fields = <String, String>{
+    'max_portion_g': 'Khẩu phần tối đa mỗi lần (g)',
+    'daily_limit_g': 'Tổng lượng tối đa mỗi ngày (g)',
     'max_daily_feeds': 'Số lần cấp tối đa mỗi ngày',
-    'bowl_capacity_g': 'Sức chứa bát (g)',
-    'max_feed_pulses': 'Số nhịp cấp tối đa',
-    'min_interval_s': 'Khoảng chờ (giây)',
-    'observation_s': 'Theo dõi sau cấp (giây)',
-    'food_stale_s': 'Nhắc kiểm tra thức ăn cũ (giây)',
+    'bowl_capacity_g': 'Sức chứa tối đa của bát (g)',
+    'max_feed_pulses': 'Số nhịp servo tối đa mỗi phiên',
+    'min_interval_s': 'Khoảng chờ giữa các phiên (giây)',
     'feed_timeout_s': 'Thời gian cấp tối đa (giây)',
+    'tolerance_g': 'Sai số cân (g)',
+    'timezone_offset_min': 'Múi giờ so với UTC (phút)',
   };
-  final label = TextEditingController();
+
   final values = {for (final key in fields.keys) key: TextEditingController()};
-  bool confirmed = false,
-      requirePet = false,
-      lockdown = false,
-      loading = true,
-      saving = false;
+  bool requirePet = false;
+  bool loading = true;
+  bool saving = false;
   String? error;
 
   @override
@@ -37,16 +38,13 @@ class _SafetySettingsState extends State<SafetySettings> {
 
   Future<void> load() async {
     try {
-      final c = await ApiService().getSafetyConfig();
+      final config = await ApiService().getSafetyConfig();
       if (!mounted) return;
       for (final key in fields.keys) {
-        values[key]!.text = '${c[key]}';
+        values[key]!.text = '${config[key]}';
       }
-      label.text = c['food_label'] ?? '';
       setState(() {
-        confirmed = c['food_confirmed'] == true;
-        requirePet = c['require_pet'] == true;
-        lockdown = c['lockdown'] == true;
+        requirePet = config['require_pet'] == true;
         loading = false;
         error = null;
       });
@@ -66,18 +64,15 @@ class _SafetySettingsState extends State<SafetySettings> {
       error = null;
     });
     try {
-      final patch = <String, dynamic>{
-        'food_label': label.text.trim(),
-        'food_confirmed': confirmed,
-        'require_pet': requirePet,
-        'lockdown': lockdown,
-      };
+      final patch = <String, dynamic>{'require_pet': requirePet};
       for (final key in fields.keys) {
-        final number = int.tryParse(values[key]!.text);
-        if (number == null) {
-          throw FormatException('Nhập số nguyên cho ${fields[key]}');
+        final parsed = key == 'tolerance_g'
+            ? num.tryParse(values[key]!.text.trim())
+            : int.tryParse(values[key]!.text.trim());
+        if (parsed == null) {
+          throw FormatException('Nhập giá trị hợp lệ cho ${fields[key]}');
         }
-        patch[key] = number;
+        patch[key] = parsed;
       }
       await ApiService().saveSafetyConfig(patch);
       if (!mounted) return;
@@ -94,95 +89,72 @@ class _SafetySettingsState extends State<SafetySettings> {
 
   @override
   void dispose() {
-    label.dispose();
-    for (final c in values.values) {
-      c.dispose();
+    for (final controller in values.values) {
+      controller.dispose();
     }
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => Card(
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Xác nhận thức ăn và giới hạn cấp',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+  Widget build(BuildContext context) => SectionCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Chính sách cấp thức ăn',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Khẩu phần là lượng cấp thêm vào bát. Các giới hạn được kiểm tra ở backend và ESP32.',
+          style: TextStyle(color: AppTheme.textMuted, height: 1.5),
+        ),
+        const SizedBox(height: 12),
+        if (loading)
+          const LinearProgressIndicator()
+        else ...[
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Bắt buộc camera phát hiện chó/mèo'),
+            subtitle: const Text(
+              'Cần mở camera và nhận diện mới từ YOLO trước khi cấp. Chức năng này chỉ nhận biết loài chó/mèo, chưa xác minh đúng cá thể đã đăng ký.',
+            ),
+            value: requirePet,
+            onChanged: saving ? null : (value) => setState(() => requirePet = value),
           ),
-          const SizedBox(height: 12),
-          if (loading)
-            const LinearProgressIndicator()
-          else ...[
-            TextField(
-              controller: label,
-              decoration: const InputDecoration(
-                labelText: 'Tên thức ăn do chủ xác nhận',
-              ),
-            ),
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Tôi đã kiểm tra thức ăn'),
-              value: confirmed,
-              onChanged: saving ? null : (v) => setState(() => confirmed = v!),
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Khóa cấp thức ăn'),
-              value: lockdown,
-              onChanged: saving ? null : (v) => setState(() => lockdown = v),
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Yêu cầu phát hiện chó/mèo trước khi cấp'),
-              subtitle: const Text(
-                'YOLO phải phát hiện chó/mèo từ ảnh camera mới. Không có kết quả hợp lệ sẽ chặn UNKNOWN_PET.',
-              ),
-              value: requirePet,
-              onChanged: saving ? null : (v) => setState(() => requirePet = v),
-            ),
-            ExpansionTile(
-              title: const Text('Giới hạn và thời gian kiểm thử'),
-              children: [
-                for (final key in fields.keys)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: TextField(
-                      controller: values[key],
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(labelText: fields[key]),
-                    ),
-                  ),
-              ],
-            ),
-            if (error != null)
-              Text(
-                error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            Wrap(
-              spacing: 8,
-              children: [
-                ElevatedButton(
-                  onPressed: saving ? null : save,
-                  child: Text(
-                    saving ? 'Đang lưu...' : 'Lưu xác nhận và giới hạn',
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            title: const Text('Giới hạn và lịch hệ thống'),
+            children: [
+              for (final key in fields.keys)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: TextField(
+                    controller: values[key],
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(labelText: fields[key]),
                   ),
                 ),
-                TextButton(
-                  onPressed: saving ? null : load,
-                  child: const Text('Tải lại'),
-                ),
-              ],
-            ),
-            const Text(
-              'SUCCESS xác nhận lượng máy đã cấp; cân giảm chưa chứng minh thú đã ăn. Phiên gián đoạn cần kiểm tra và gửi reconcile CHECKED trên Serial.',
-            ),
+            ],
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 8),
+            Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
           ],
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              FilledButton(
+                onPressed: saving ? null : save,
+                child: Text(saving ? 'Đang lưu…' : 'Lưu chính sách'),
+              ),
+              TextButton(onPressed: saving ? null : load, child: const Text('Tải lại')),
+            ],
+          ),
         ],
-      ),
+      ],
     ),
   );
 }

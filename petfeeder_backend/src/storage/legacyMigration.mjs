@@ -21,10 +21,8 @@ export function migrateLegacy(db,file){
   schedules([...existing,...imported],c);
   db.transaction(()=>{
     if(!db.get('config'))db.put('config','state',c);
-    db.put('legacy_config','state',legacy);
     db.put('schedules','state',[...existing,...imported]);
     for(const r of old.feeding_history||[])db.put('legacy_history',r.id,r);
-    for(const a of old.alerts||[])db.put('legacy_alerts',a.id,a);
     db.put('migrations','legacy-json-v1',{source:file});
   });
 }

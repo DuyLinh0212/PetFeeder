@@ -72,7 +72,7 @@ class ApiService {
     baseUrl = candidate;
   }
 
-  // 1. Lấy trạng thái thiết bị (FR-05, FR-06)
+  // Trạng thái cân, giới hạn ngày và kết nối thiết bị.
   Future<DeviceStatus> getDeviceStatus({String? serverUrl}) async {
     final uri = Uri.parse('${serverUrl ?? baseUrl}/api/device/status');
     final res = await _get(uri).timeout(const Duration(seconds: 4));
@@ -84,7 +84,7 @@ class ApiService {
     }
   }
 
-  // 2. Kích hoạt lệnh Cho ăn ngay (FR-08)
+  // Đọc và cập nhật chính sách cấp thức ăn.
   Future<Map<String, dynamic>> getSafetyConfig() async {
     final res = await _get(
       Uri.parse('$baseUrl/api/device/config'),
@@ -151,9 +151,7 @@ class ApiService {
 
   Future<Map<String, dynamic>> feedNow({
     required num portion,
-    required bool override,
     bool retry = false,
-    String? retryOf,
   }) async {
     final server = baseUrl;
     var stage = 'đọc yêu cầu đã lưu';
@@ -170,20 +168,19 @@ class ApiService {
       if (!retry && command != null) {
         stage = 'đọc kết quả yêu cầu trước';
         final res = await _get(
-          Uri.parse('$server/api/history'),
+          Uri.parse('$server/api/commands/${Uri.encodeComponent(command['command_id'] as String)}'),
         ).timeout(const Duration(seconds: 4));
-        if (res.statusCode != 200) {
+        if (res.statusCode != 200 && res.statusCode != 404) {
           throw FeedRequestException(
             'Không đọc được kết quả yêu cầu trước (HTTP ${res.statusCode}). Giữ nguyên mã lệnh và thử lại khi kết nối hoạt động.',
             mayHaveBeenSent: false,
           );
         }
-        final rows = _feedBody(utf8.decode(res.bodyBytes))['commands'];
-        if (rows is! List) throw const FormatException('Missing commands');
-        final previous = rows
-            .whereType<Map>()
-            .where((r) => r['command_id'] == command!['command_id'])
-            .firstOrNull;
+        final previous = res.statusCode == 200
+            ? Map<String, dynamic>.from(
+                _feedBody(utf8.decode(res.bodyBytes))['data'] as Map,
+              )
+            : null;
         const terminal = {
           'SUCCESS',
           'PARTIAL',
@@ -191,9 +188,8 @@ class ApiService {
           'REJECTED',
           'COMMAND_EXPIRED',
           'SENSOR_ERROR',
-          'JAM_ERROR',
+          'BOWL_MISSING',
           'TIMEOUT',
-          'FOOD_EMPTY',
           'INTERRUPTED',
         };
         if (previous != null && terminal.contains(previous['status'])) {
@@ -229,8 +225,6 @@ class ApiService {
           'created_at': id['now'],
           'expires_at': id['now'] + id['ttl_s'],
           'portion': portion,
-          'override': override,
-          'retry_of': ?retryOf,
         };
         stage = 'lưu mã yêu cầu trên điện thoại';
         if (!await prefs.setString(key, jsonEncode(command))) {
@@ -250,7 +244,18 @@ class ApiService {
       if (res.statusCode == 200 && data['success'] is! bool) {
         throw const FormatException('Invalid feeding response');
       }
-      if (res.statusCode == 400 && data['code'] != 'COMMAND_ID_CONFLICT') {
+      final returned = data['data'] is Map
+          ? Map<String, dynamic>.from(data['data'] as Map)
+          : const <String, dynamic>{};
+      const terminal = {
+        'SUCCESS', 'PARTIAL', 'OVER_PORTION', 'REJECTED',
+        'COMMAND_EXPIRED', 'SENSOR_ERROR', 'BOWL_MISSING', 'TIMEOUT', 'INTERRUPTED',
+      };
+      if (res.statusCode == 400 && data['code'] == 'COMMAND_EXPIRED') {
+        await prefs.remove(key);
+      }
+      if (data['code'] != 'COMMAND_ID_CONFLICT' &&
+          terminal.contains(returned['status'])) {
         await prefs.remove(key);
       }
       return {
@@ -299,40 +304,42 @@ class ApiService {
   ) async {
     try {
       final res = await _get(
-        Uri.parse('$server/api/history'),
+        Uri.parse('$server/api/commands/${Uri.encodeComponent(commandId)}'),
       ).timeout(const Duration(seconds: 4));
       if (res.statusCode != 200) return null;
-      final rows = _feedBody(utf8.decode(res.bodyBytes))['commands'];
-      if (rows is! List) return null;
-      final previous = rows
-          .whereType<Map>()
-          .where((row) => row['command_id'] == commandId)
-          .firstOrNull;
-      if (previous == null) return null;
+      final previous = Map<String, dynamic>.from(
+        _feedBody(utf8.decode(res.bodyBytes))['data'] as Map,
+      );
       final status = previous['status'];
       final message = switch (status) {
         'QUEUED' => 'Máy chủ đã nhận yêu cầu; đang chờ thiết bị xác nhận.',
         'ACCEPTED' => 'Thiết bị đã nhận yêu cầu; đang chuẩn bị cấp thức ăn.',
         'DISPENSING' => 'Thiết bị đang cấp khẩu phần đã yêu cầu.',
-        'SUCCESS' =>
-          'Thiết bị đã xác nhận hoàn tất phiên cấp. Xem lượng đã cấp trong Nhật ký.',
+        'SUCCESS' => 'Thiết bị đã xác nhận hoàn tất phiên cấp.',
         'DELIVERY_UNKNOWN' =>
           'Máy chủ đã nhận yêu cầu nhưng chưa có kết quả từ thiết bị. Dùng Gửi lại cùng mã.',
         'COMMAND_EXPIRED' =>
           'Yêu cầu đã hết hạn; thiết bị không thực hiện lệnh này.',
         'SENSOR_ERROR' =>
-          'Thiết bị đã dừng vì lỗi cảm biến. Kiểm tra thiết bị và lượng thức ăn trong bát trước khi cấp tiếp.',
-        'REJECTED' => 'Thiết bị đã từ chối yêu cầu. Xem lý do trong Nhật ký.',
-        'PARTIAL' ||
-        'JAM_ERROR' ||
-        'TIMEOUT' ||
-        'FOOD_EMPTY' ||
-        'INTERRUPTED' ||
-        'OVER_PORTION' =>
-          'Phiên cấp đã dừng. Kiểm tra lượng đã cấp và nguyên nhân trong Nhật ký.',
+          'Thiết bị đã dừng vì cân lỗi hoặc bát không còn trên cân.',
+        'BOWL_MISSING' =>
+          'Bát đã rời cân giữa phiên. Lượng cấp chưa xác định; cần kiểm tra và đối soát thiết bị.',
+        'REJECTED' => 'Thiết bị từ chối yêu cầu: ${previous['error_code'] ?? 'REJECTED'}.',
+        'PARTIAL' => 'Thiết bị đã dừng trước khi đạt đủ lượng đặt.',
+        'TIMEOUT' => 'Thiết bị đã dừng sau khi hết thời gian cấp tối đa.',
+        'INTERRUPTED' => 'Phiên cấp bị gián đoạn; cần kiểm tra thiết bị.',
+        'OVER_PORTION' => 'Thiết bị đã dừng để tránh cấp quá lượng đặt.',
         _ => null,
       };
       if (message == null) return null;
+      const terminal = {
+        'SUCCESS', 'PARTIAL', 'OVER_PORTION', 'REJECTED',
+        'COMMAND_EXPIRED', 'SENSOR_ERROR', 'BOWL_MISSING', 'TIMEOUT', 'INTERRUPTED',
+      };
+      if (terminal.contains(status)) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('pending_feed:$server');
+      }
       return {
         'success': const {
           'QUEUED',
@@ -353,7 +360,7 @@ class ApiService {
     }
   }
 
-  // 3. Quản lý lịch (FR-01, FR-02)
+  // Lịch được lưu trên ESP32 để tiếp tục chạy khi mất mạng.
   Future<List<FeedingSchedule>> getSchedules() async {
     final uri = Uri.parse('$baseUrl/api/schedules');
     final res = await _get(uri).timeout(const Duration(seconds: 4));
@@ -408,45 +415,4 @@ class ApiService {
     return res.statusCode == 200;
   }
 
-  // 4. Lịch sử cho ăn (FR-10)
-  Future<List<FeedingRecord>> getHistory({int limit = 40}) async {
-    final uri = Uri.parse('$baseUrl/api/feeding/history?limit=$limit');
-    final res = await _get(uri).timeout(const Duration(seconds: 4));
-    if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes));
-      final List list = data['data'] ?? [];
-      return list.map((item) => FeedingRecord.fromJson(item)).toList();
-    }
-    throw Exception('Lỗi tải lịch sử');
-  }
-
-  Future<bool> clearHistory() async {
-    final uri = Uri.parse('$baseUrl/api/feeding/history');
-    final res = await _delete(uri).timeout(const Duration(seconds: 8));
-    return res.statusCode == 200;
-  }
-
-  // 5. Cảnh báo & Thông báo (FR-07)
-  Future<List<AlertNotification>> getNotifications() async {
-    final uri = Uri.parse('$baseUrl/api/notifications');
-    final res = await _get(uri).timeout(const Duration(seconds: 4));
-    if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes));
-      final List list = data['data'] ?? [];
-      return list.map((item) => AlertNotification.fromJson(item)).toList();
-    }
-    throw Exception('Lỗi tải thông báo');
-  }
-
-  Future<bool> markNotificationRead(String id) async {
-    final uri = Uri.parse('$baseUrl/api/notifications/$id/read');
-    final res = await _patch(uri).timeout(const Duration(seconds: 8));
-    return res.statusCode == 200;
-  }
-
-  Future<bool> clearNotifications() async {
-    final uri = Uri.parse('$baseUrl/api/notifications');
-    final res = await _delete(uri).timeout(const Duration(seconds: 8));
-    return res.statusCode == 200;
-  }
 }

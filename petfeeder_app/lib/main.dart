@@ -5,7 +5,6 @@ import 'services/api_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/schedules_screen.dart';
-import 'screens/history_screen.dart';
 import 'screens/settings_screen.dart';
 
 Future<void> main() async {
@@ -82,7 +81,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         onRefresh: _fetchStatus,
       ),
       const SchedulesScreen(),
-      const HistoryScreen(),
       SettingsScreen(onRefresh: _fetchStatus),
     ];
     return Scaffold(
@@ -167,10 +165,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                 icon: Icon(Icons.schedule_outlined),
                 selectedIcon: Icon(Icons.schedule_rounded),
                 label: 'Lịch ăn',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.history_rounded),
-                label: 'Nhật ký',
               ),
               NavigationDestination(
                 icon: Icon(Icons.tune_rounded),

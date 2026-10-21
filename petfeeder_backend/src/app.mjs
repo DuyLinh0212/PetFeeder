@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {FeedingService} from './services/feedingService.mjs';
@@ -24,21 +24,38 @@ function epochSeconds(value,fallback){
 }
 function legacyStatus(value){
   const raw=String(value||'LEGACY_EVENT').trim().toUpperCase();
-  const known=new Map([['HOAN TAT','SUCCESS'],['HOAN TAT!','SUCCESS'],['CAP THIEU','PARTIAL'],['CAP THIEU!','PARTIAL'],['KET THUC AN','JAM_ERROR']]);
+  const known=new Map([['HOAN TAT','SUCCESS'],['HOAN TAT!','SUCCESS'],['CAP THIEU','PARTIAL'],['CAP THIEU!','PARTIAL']]);
   if(known.has(raw))return known.get(raw);
   const normalized=raw.replace(/[^A-Z0-9_.:-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,96);
   return validIdentifier(normalized)?normalized:'LEGACY_EVENT';
 }
 function normalizeHeartbeat(payload,clock){
-  const normalized={...payload};
-  normalized.occurred_at=epochSeconds(payload.occurred_at??payload.timestamp,clock());
-  if(typeof normalized.busy!=='boolean')normalized.busy=/DANG\s*(CAP|CHO AN)/i.test(String(payload.status||''));
-  if(typeof normalized.weight_g!=='number')normalized.weight_g=typeof payload.bowl_weight_g==='number'?payload.bowl_weight_g:null;
-  if(typeof normalized.boot_id!=='string')normalized.boot_id=`legacy:${String(payload.device_id||'device')}`;
-  return normalized;
+  const deviceId=typeof payload.device_id==='string'?payload.device_id:'petfeeder_01';
+  const weight=typeof payload.weight_g==='number'?payload.weight_g:
+    typeof payload.bowl_weight_g==='number'?payload.bowl_weight_g:null;
+  return {
+    device_id:deviceId,
+    status:typeof payload.status==='string'?payload.status:'SAN SANG',
+    occurred_at:epochSeconds(payload.occurred_at??payload.timestamp,clock()),
+    busy:typeof payload.busy==='boolean'?payload.busy:/DANG\s*(CAP|CHO AN)/i.test(String(payload.status||'')),
+    weight_g:weight,
+    ip:typeof payload.ip==='string'?payload.ip:'',
+    rssi:Number.isInteger(payload.rssi)?payload.rssi:0,
+    locked:payload.locked===true,
+    time_valid:payload.time_valid===true,
+    sensor_mode:typeof payload.sensor_mode==='string'?payload.sensor_mode:'UNKNOWN',
+    pet_detected_yolo:payload.pet_detected_yolo===true,
+    ...(typeof payload.pet_id==='string'?{pet_id:payload.pet_id}:{}),
+    boot_id:typeof payload.boot_id==='string'?payload.boot_id:`legacy:${deviceId}`,
+    config_version:typeof payload.config_version==='string'?payload.config_version:'',
+  };
 }
 function normalizeEvent(payload,body,db,clock){
-  const occurredAt=epochSeconds(payload.occurred_at??payload.timestamp,clock());
+  const receivedAt=clock();
+  let occurredAt=epochSeconds(payload.occurred_at??payload.timestamp,receivedAt);
+  // Keep events from an unset device clock out of 1970. Heartbeats retain
+  // occurred_at=0 so FeedingService can detect the skew and send a time sync.
+  if(occurredAt<1700000000)occurredAt=receivedAt;
   const hasModernId=validIdentifier(payload.event_id);
   const eventId=hasModernId?payload.event_id:`legacy:${createHash('sha256').update(body).digest('hex').slice(0,32)}`;
   const commandId=validIdentifier(payload.command_id)?payload.command_id:undefined;
@@ -50,6 +67,8 @@ function normalizeEvent(payload,body,db,clock){
   if(['APP','BUTTON','SCHEDULE'].includes(payload.source))event.source=payload.source;
   if(typeof payload.target_portion_g==='number')event.target_portion_g=payload.target_portion_g;
   if(typeof payload.actual_weight_g==='number'||payload.actual_weight_g===null)event.actual_weight_g=payload.actual_weight_g;
+  for(const key of ['pet_id','recognition_id','recognition_source'])if(typeof payload[key]==='string')event[key]=payload[key].slice(0,96);
+  if(typeof payload.confidence==='number'&&Number.isFinite(payload.confidence))event.confidence=payload.confidence;
   if(typeof payload.error_code==='string')event.error_code=payload.error_code.slice(0,96);
   return {event,ackId:hasModernId?payload.event_id:null};
 }
@@ -77,7 +96,7 @@ export function createBackend({dataDir,legacyFile,brokerUrl,prefix='duylinh0212/
   }
   if(!injected){
     client=mqtt.connect(brokerUrl||process.env.MQTT_BROKER_URL||'mqtt://broker.emqx.io:1883',{
-      clientId:`petfeeder-main-${process.pid}`,clean:true,reconnectPeriod:3000,
+      clientId:`petfeeder-main-${randomUUID()}`,clean:true,reconnectPeriod:3000,
       username:process.env.MQTT_USERNAME,password:process.env.MQTT_PASSWORD,
     });
     client.on('connect',()=>client.subscribe([`${prefix}/events`,`${prefix}/telemetry`],{qos:1},()=>service.sync()));

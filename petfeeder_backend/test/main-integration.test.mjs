@@ -7,7 +7,9 @@ import {join} from 'node:path';
 import {once} from 'node:events';
 import {createBackend} from '../src/app.mjs';
 
-test('Main Flutter REST contract uses durable IDs, validates schedules and retains dedup after hiding history',async()=>{
+test('Main Flutter REST contract uses durable IDs, validates schedules and retains dedup after hiding history',async t=>{
+  // Pause background retries so slow disk I/O cannot race publish-count assertions.
+  t.mock.timers.enable({apis:['setInterval']});
   const dir=mkdtempSync(join(tmpdir(),'petfeeder-main-'));
   const sent=[];let now=1792500000;
   const integration=createBackend({dataDir:dir,clock:()=>now,transport:{mode:'TEST',send(k,p){sent.push([k,p]);return true;}}});

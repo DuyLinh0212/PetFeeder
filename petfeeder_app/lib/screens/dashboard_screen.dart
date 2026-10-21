@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
@@ -30,7 +29,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       result = await ApiService().feedNow(
         portion: _portion,
-        override: false,
         retry: retry,
       );
       if (!mounted) return;
@@ -85,15 +83,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  String _lastMeal(DeviceStatus? status) {
-    if (status?.lastFeedTime == null) return 'Chưa có bữa ăn gần đây';
-    final date = DateTime.tryParse(status!.lastFeedTime!);
-    final time = date == null
-        ? status.lastFeedTime!
-        : DateFormat('HH:mm · dd/MM').format(date.toLocal());
-    return 'Lần gần nhất: $time · ${status.lastFeedPortionG.toStringAsFixed(0)} g';
-  }
-
   String _systemLabel(String value) => switch (value.trim().toUpperCase()) {
     'CONFIG_APPLIED' => 'Đã đồng bộ cấu hình',
     'CLOCK_SYNCED' => 'Đã đồng bộ giờ thiết bị',
@@ -102,28 +91,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'SAN SANG' => 'Sẵn sàng cho bữa ăn',
     'DANG CHO AN' || 'DANG CHO AN...' => 'Đang cấp thức ăn',
     'HOAN TAT' || 'HOAN TAT!' => 'Đã hoàn tất bữa ăn',
-    'KET THUC AN' || 'JAM_ERROR' || 'LOI KET HAT' => 'Thức ăn bị kẹt',
-    'HET HAT' || 'EMPTY' || 'LOI: HET HAT' => 'Cần bổ sung thức ăn',
-    'LOI: HONG CAN!' => 'Cần kiểm tra cân thức ăn',
-    'LOI: CB SIEU AM' => 'Cần kiểm tra cảm biến mức hạt',
-    'KHOA AN TOAN!' => 'Thiết bị đang khóa an toàn',
-    'CHO XAC MINH' => 'Đang chờ xác minh',
-    'VUOT HAN MUC' => 'Đã đạt hạn mức cho ăn',
-    'BLOCKED: VUA AN' => 'Bé vừa được cho ăn',
-    'MAT BAT THUC AN!' => 'Hãy đặt lại bát thức ăn',
-    'CAN KHONG ON DINH' => 'Cân thức ăn chưa ổn định',
-    'BAT DA DAY!' => 'Bát thức ăn đã đầy',
-    'OVERRIDE FEED' => 'Đang cấp bữa ăn bổ sung',
-    'DUNG: THU AN!' => 'Đã dừng cấp hạt khi bé đang ăn',
-    'CAP THIEU!' => 'Lượng hạt cấp chưa đủ',
+    'BOWL_MISSING' => 'Không phát hiện bát trên cân',
+    'WEIGHT_UNSTABLE' || 'MEASUREMENT_LOST' => 'Cân chưa ổn định',
+    'DAILY_LIMIT' => 'Đã đạt giới hạn lượng ăn trong ngày',
+    'DAILY_FEED_LIMIT' => 'Đã đạt số bữa tối đa trong ngày',
+    'BOWL_FULL' => 'Bát không còn đủ sức chứa',
+    'BLOCKED_DUPLICATE' => 'Đã chặn yêu cầu gửi trùng',
+    'UNKNOWN_PET' => 'Chưa xác minh được thú cưng',
+    'RECONCILIATION_REQUIRED' => 'Cần kiểm tra thiết bị trước khi cấp tiếp',
+    'COMMAND_EXPIRED' => 'Yêu cầu đã hết hạn',
+    'OVER_PORTION' => 'Đã dừng để tránh cấp quá lượng đặt',
     'PARTIAL' => 'Lượng hạt cấp chưa đủ',
     'SENSOR_ERROR' => 'Cần kiểm tra cảm biến',
     'COOLDOWN' => 'Đang trong khoảng chờ bảo vệ',
-    'RECONCILIATION_REQUIRED' => 'Cần kiểm tra phiên cấp bị gián đoạn',
-    'UNVERIFIED' => 'Chờ chủ xác nhận thức ăn',
-    'UNKNOWN_PET' => 'Chưa xác minh được thú cưng',
+    'TIMEOUT' => 'Đã dừng sau thời gian cấp tối đa',
+    'INTERRUPTED' => 'Phiên cấp bị gián đoạn',
     'DANG CAP' => 'Đang cấp thức ăn',
-    'XU LY KET!' => 'Đang xử lý hạt bị kẹt',
     'KHOI DONG' => 'Thiết bị đang khởi động',
     'KET NOI WIFI...' => 'Thiết bị đang kết nối Wi-Fi',
     _ => value,
@@ -208,35 +191,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final status = widget.status;
     final online = status?.online == true;
     final known = status != null && online;
-    final foodKnown = known && status.foodLevelPercent != null;
     final bowlKnown = known && status.bowlWeightG != null;
     final maxPortion = status?.maxPortionG ?? 100;
     final selectedPortion = _portion.clamp(
       maxPortion < 10 ? maxPortion : 10,
       maxPortion,
     );
-    final percent = (status?.foodLevelPercent ?? 0).clamp(0, 100);
-    final low = percent <= 20;
-    final food = _metric(
-      label: 'Hạt trong hộp',
-      value: foodKnown ? '$percent%' : '—',
-      icon: Icons.inventory_2_outlined,
-      highlighted: true,
-      caption: !foodKnown
-          ? 'Chưa có dữ liệu mới'
-          : low
-          ? 'Cần thêm hạt'
-          : percent <= 45
-          ? 'Nên chuẩn bị thêm hạt'
-          : 'Đủ hạt cho bé',
-      captionColor: foodKnown && low ? const Color(0xFFFFC4B8) : null,
-      progress: foodKnown ? percent / 100 : 0,
-    );
     final bowl = _metric(
-      label: 'Trong bát',
+      label: 'Khối lượng trong bát',
       value: bowlKnown ? '${status.bowlWeightG!.toStringAsFixed(1)} g' : '—',
       icon: Icons.rice_bowl_rounded,
-      caption: bowlKnown ? 'Khối lượng hiện tại' : 'Chưa có dữ liệu mới',
+      caption: bowlKnown
+          ? 'Sức chứa tối đa ${status.bowlCapacityG} g'
+          : 'Chưa có số đo cân mới',
+    );
+    final dailyProgress = status == null || status.dailyLimitG == 0
+        ? 0.0
+        : (status.dailyDispensedG / status.dailyLimitG)
+              .clamp(0.0, 1.0)
+              .toDouble();
+    final daily = _metric(
+      label: 'Đã cấp hôm nay',
+      value: '${status?.dailyDispensedG.toStringAsFixed(0) ?? '0'} g',
+      icon: Icons.event_available_rounded,
+      highlighted: true,
+      caption: '${status?.dailyFeedCount ?? 0}/${status?.maxDailyFeeds ?? 6} bữa · giới hạn ${status?.dailyLimitG ?? 200} g',
+      progress: dailyProgress,
     );
     return PageContent(
       child: RefreshIndicator(
@@ -289,7 +269,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(height: 3),
                         Text(
                           online
-                              ? _systemLabel(status!.systemStatus)
+                              ? _systemLabel(status!.locked
+                                  ? 'RECONCILIATION_REQUIRED'
+                                  : status.systemStatus)
                               : 'Kiểm tra nguồn điện, Wi-Fi và địa chỉ trong Cài đặt.',
                           style: const TextStyle(
                             color: AppTheme.textMuted,
@@ -313,16 +295,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 if (!wide) {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [food, const SizedBox(height: 12), bowl],
+                    children: [bowl, const SizedBox(height: 12), daily],
                   );
                 }
                 return IntrinsicHeight(
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(child: food),
-                      const SizedBox(width: 12),
                       Expanded(child: bowl),
+                      const SizedBox(width: 12),
+                      Expanded(child: daily),
                     ],
                   ),
                 );
@@ -395,41 +377,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   if (status?.sensorMode == 'DEMO_AUTO')
                     const Text(
-                      'Số liệu demo mô phỏng, chưa xác nhận lượng cấp thực tế.',
+                      'Số liệu HX711 đang được mô phỏng, chưa xác nhận lượng cấp thực tế.',
+                    ),
+                  if (status?.requirePet == true)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Đang yêu cầu xác minh thú. Mạch chưa có RFID/camera nên lệnh sẽ bị từ chối là UNKNOWN_PET.',
+                        style: TextStyle(color: AppTheme.accentAmber, fontSize: 12, height: 1.4),
+                      ),
                     ),
                   Text(
                     online
-                        ? 'Tự động bảo vệ bé khỏi các bữa ăn quá gần nhau.'
+                        ? 'Khẩu phần là lượng cấp thêm. Thiết bị áp dụng khoảng chờ và giới hạn trong ngày.'
                         : 'Kết nối thiết bị để cho bé ăn từ xa.',
                     style: const TextStyle(
                       fontSize: 12,
                       color: AppTheme.textMuted,
                       height: 1.4,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(
-                    Icons.history_rounded,
-                    size: 18,
-                    color: AppTheme.textMuted,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _lastMeal(status),
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textMuted,
-                        height: 1.5,
-                      ),
                     ),
                   ),
                 ],

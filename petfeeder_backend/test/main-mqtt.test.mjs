@@ -57,3 +57,31 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
     rmSync(dataDir,{recursive:true,force:true});
   }
 });
+
+test('Backends in separate namespaces on one broker keep independent MQTT connections',async()=>{
+  const broker=await Aedes.createBroker(),tcp=createServer(broker.handle);
+  tcp.listen(0,'127.0.0.1');await once(tcp,'listening');
+  const url=`mqtt://127.0.0.1:${tcp.address().port}`;
+  const dirs=[mkdtempSync(join(tmpdir(),'petfeeder-sync-a-')),mkdtempSync(join(tmpdir(),'petfeeder-sync-b-'))];
+  const observer=mqtt.connect(url,{reconnectPeriod:0});await once(observer,'connect');
+  const backends=[];
+  try{
+    backends.push(createBackend({dataDir:dirs[0],brokerUrl:url,prefix:'test/sync/a'}));
+    await waitFor(()=>backends[0].connected());
+    backends.push(createBackend({dataDir:dirs[1],brokerUrl:url,prefix:'test/sync/b'}));
+    await waitFor(()=>backends[1].connected());
+    await new Promise((resolve,reject)=>observer.publish('test/sync/a/telemetry',JSON.stringify({
+      occurred_at:Math.floor(Date.now()/1000),busy:false,weight_g:12,boot_id:'simulator-a',
+      config_version:backends[0].service.syncPayload().version,
+    }),{qos:1},e=>e?reject(e):resolve()));
+    await waitFor(()=>backends[0].service.state().connection==='ONLINE');
+    assert(backends.every(backend=>backend.connected()));
+    assert.equal(backends[0].service.state().device.weight_g,12);
+    assert.equal(backends[1].service.state().connection,'OFFLINE');
+  }finally{
+    backends.forEach(backend=>backend.close());
+    await new Promise(r=>observer.end(true,r));
+    await new Promise(r=>broker.close(r));await new Promise(r=>tcp.close(r));
+    dirs.forEach(dir=>rmSync(dir,{recursive:true,force:true}));
+  }
+});

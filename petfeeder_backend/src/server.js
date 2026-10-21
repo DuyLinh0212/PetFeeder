@@ -9,7 +9,7 @@ async function startServer() {
   const app=express();app.use(cors());app.use(express.json({limit:'32kb'}));
   app.use('/api',integration.router);
   app.get('/health',(req,res)=>res.json({status:'OK',mqtt_connected:integration.connected()}));
-  app.get('/api',(req,res)=>res.json({name:'PetFeeder Backend',device:'/api/device/status',schedules:'/api/schedules',feeding:'/api/feeding/feed'}));
+  app.get('/api',(req,res)=>res.json({name:'PetFeeder Backend',device:'/api/device/status',schedules:'/api/schedules',feeding:'/api/feeding/feed',commands:'/api/commands/:id'}));
   app.use(express.static(path.resolve(__dirname,'../../petfeeder_app/build/web')));
   app.get('/',(req,res)=>res.redirect('/api'));
   app.use((err,req,res,next)=>res.status(err.status||500).json({success:false,code:err instanceof SyntaxError?'INVALID_JSON':'INTERNAL_ERROR',message:err.message}));

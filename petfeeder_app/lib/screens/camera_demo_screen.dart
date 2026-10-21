@@ -169,7 +169,6 @@ class _CameraDemoScreenState extends State<CameraDemoScreen>
     try {
       final response = await api.feedNow(
         portion: 20,
-        override: false,
         retry: retry,
       );
       if (mounted) {
