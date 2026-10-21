@@ -178,6 +178,9 @@ const char* errorVi(const char* code){
   return "Xem mã lỗi để biết chi tiết";
 }
 void printEventVi(const char* status,JsonVariantConst command,const char* error){
+  // A temporarily invalid boot clock is expected before NTP/server sync.
+  // Keep the event in the durable outbox, but do not spam Serial Monitor.
+  if(!strcmp(status,"TIME_INVALID"))return;
   Serial.printf("[SỰ KIỆN] %s (%s)",statusVi(status),status);
   if(error){Serial.printf(" — %s (%s)",errorVi(error),error);}
   if(numeric(command["target_portion_g"],0,500))Serial.printf(" — khẩu phần %.0f g",command["target_portion_g"].as<float>());
