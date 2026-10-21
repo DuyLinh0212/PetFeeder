@@ -83,6 +83,17 @@ export function createApiRouter({db,service,clock,connected}){
   }
   router.get('/id',(req,res)=>res.json({command_id:service.id(),now:clock(),ttl_s:service.settings().command_ttl_s}));
   router.get('/state',(req,res)=>res.json(service.state()));
+  router.get('/pets/demo',(req,res)=>ok(res,db.get('camera_pet')));
+  router.post('/pets/demo',(req,res)=>{
+    const b=object(req.body);
+    if(typeof b.name!=='string'||!b.name.trim()||b.name.trim().length>60)throw new Invalid('INVALID_FIELD','name');
+    const old=db.get('camera_pet');
+    const pet={pet_id:old?.pet_id||service.settings().registered_pet_id||`pet-${service.id()}`,name:b.name.trim()};
+    service.configure({registered_pet_id:pet.pet_id,require_pet:true});db.put('camera_pet','state',pet);
+    ok(res,pet);
+  });
+  router.get('/identity',(req,res)=>ok(res,service.state().identity));
+  router.post('/identity/camera-demo',(req,res)=>res.status(410).json({success:false,code:'MANUAL_VERIFICATION_REMOVED',message:'Chỉ nhận kết quả từ YOLO xử lý ảnh.'}));
   router.get('/history',(req,res)=>res.json({commands:db.all('commands'),events:db.all('events')}));
   router.post('/config',(req,res)=>res.json(configure(req.body)));
   router.get('/device/status',(req,res)=>ok(res,device()));

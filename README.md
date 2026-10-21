@@ -1,5 +1,13 @@
 # PetFeeder Nhóm 7 — hệ thống cho thú cưng ăn tự động
 
+## Camera YOLO chó/mèo
+
+Camera Flutter → REST `/api/vision/detect` → YOLO11n trên laptop (cổng 8002). Đã kèm code AI và model tại `YOLO_PetFeeder/models/yolo11n.pt`. Backend mặc định gọi `http://127.0.0.1:8002`, có thể đổi bằng `YOLO_URL`.
+
+Tại thư mục PetFeeder, chạy ba terminal: `./CHAY.ps1 -Mode yolo`, `./CHAY.ps1 -Mode backend`, và `./CHAY.ps1 -Mode app`. Lần đầu cần Python và các thư viện trong `YOLO_PetFeeder/requirements.txt`. Trong app chọn **Cài đặt → Camera · YOLO chó/mèo → Mở camera thật**, cho phép camera rồi đưa chó/mèo hoặc ảnh chó/mèo vào khung hình. App hiển thị nhãn và độ tin cậy thực của model; ảnh chỉ gửi đến YOLO trên laptop.
+
+Model nhận diện loài, chưa xác minh danh tính từng con thú và chưa phân biệt ảnh chụp với thú thật. Kết quả AI tự động cho qua bước phát hiện thú sau 2 khung ảnh liên tiếp đạt từ 50%; mất thú, tắt camera hoặc kết quả quá 5 giây sẽ chặn lệnh mới. Đã bỏ các nút giả lập và vô hiệu endpoint xác minh thủ công. AI không tự phát lệnh cấp; chủ vẫn cần yêu cầu cấp hoặc dùng lịch. Các giới hạn thức ăn/khẩu phần/thời gian chờ trên backend và ESP32 được giữ nguyên.
+
 Thành viên: Nguyễn Duy Linh, Ngô Công Danh, Lê Hoàng Bảo Long.
 
 Tích hợp giao diện `feature/mobile-ui`, bảo vệ `feature/firmware-safety-and-dispensing` và lưu trữ/giao thức của `long` trên main. Flutter → REST API Node.js → MQTT → ESP32. Chỉ có một sơ đồ PetFeeder/diagram.json; giữ nguyên toàn bộ 10 linh kiện, vị trí và dây nối: ESP32, HX711, HC-SR04, hai servo, OLED, nút bấm, hai LED và còi.

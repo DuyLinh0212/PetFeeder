@@ -95,6 +95,49 @@ class ApiService {
     );
   }
 
+  String? _visionAddress;
+  Future<Map<String, dynamic>> _visionPost(
+    String path, {
+    Object? body,
+    Map<String, String>? headers,
+  }) async {
+    Future<http.Response> send(String address) => _post(
+      Uri.parse('$address/api/vision/$path'),
+      headers: headers,
+      body: body,
+    ).timeout(const Duration(seconds: 10));
+    var response = await send(_visionAddress ?? baseUrl);
+    if (response.statusCode == 404 &&
+        _configuredUrl.isNotEmpty &&
+        _configuredUrl != baseUrl) {
+      response = await send(_configuredUrl);
+      if (response.statusCode == 200) _visionAddress = _configuredUrl;
+    }
+    final result = jsonDecode(utf8.decode(response.bodyBytes));
+    if (response.statusCode != 200) {
+      throw Exception(result['message'] ?? 'Không kết nối được YOLO');
+    }
+    return Map<String, dynamic>.from(result['data']);
+  }
+
+  Future<String> startVision() async =>
+      (await _visionPost('start'))['session'] as String;
+  Future<void> stopVision(String session) async {
+    await _visionPost('stop', headers: {'X-Camera-Session': session});
+  }
+
+  Future<Map<String, dynamic>> detectCameraFrame(
+    List<int> bytes,
+    String session,
+  ) => _visionPost(
+    'detect',
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'X-Camera-Session': session,
+    },
+    body: bytes,
+  );
+
   Future<void> saveSafetyConfig(Map<String, dynamic> patch) async {
     final res = await _put(
       Uri.parse('$baseUrl/api/device/config'),

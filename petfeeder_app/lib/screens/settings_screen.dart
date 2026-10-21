@@ -1,3 +1,4 @@
+import 'camera_demo_screen.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
@@ -292,6 +293,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 28),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Camera · YOLO chó/mèo'),
+              subtitle: const Text('Nhận diện chó/mèo thật từ camera laptop.'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const CameraDemoScreen(),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
           SafetySettings(
             key: ValueKey(ApiService().baseUrl),
             onSaved: widget.onRefresh,

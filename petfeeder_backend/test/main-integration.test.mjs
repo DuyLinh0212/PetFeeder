@@ -123,3 +123,22 @@ test('The integrated circuit preserves every main component and every original w
   assert.equal(current.parts.filter(p=>p.type==='board-esp32-devkit-c-v4').length,1);
   assert.equal(current.parts.filter(p=>p.type==='wokwi-servo').length,2);
 });
+
+test('Camera REST registers a pet by name, generates its internal ID and refuses manual verification',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'petfeeder-camera-api-')),sent=[];
+  const integration=createBackend({dataDir:dir,transport:{mode:'TEST',send(kind,p){sent.push([kind,p]);return true;}}});
+  const app=express();app.use(express.json());app.use('/api',integration.router);
+  const server=app.listen(0,'127.0.0.1');await once(server,'listening');
+  const base=`http://127.0.0.1:${server.address().port}/api`;
+  const request=async(path,body)=>{const r=await fetch(base+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,body:await r.json()};};
+  try{
+    assert.equal((await request('/pets/demo')).body.data,null);
+    const registration=await request('/pets/demo',{name:'Milu'});assert.equal(registration.status,200);
+    const pet=registration.body.data;assert.match(pet.pet_id,/^pet-/);assert.equal(pet.name,'Milu');
+    assert.equal(integration.service.settings().require_pet,true);
+    assert.equal((await request('/pets/demo',{name:'Milu đổi tên'})).body.data.pet_id,pet.pet_id);
+    assert.equal((await request('/pets/demo',{name:''})).status,400);
+    assert.equal((await request('/identity/camera-demo',{pet_id:pet.pet_id,camera_active:true,matched:true,confidence:1})).status,410);
+    assert.equal((await request('/identity')).body.data,null);
+  }finally{await new Promise(r=>server.close(r));integration.close();rmSync(dir,{recursive:true,force:true});}
+});

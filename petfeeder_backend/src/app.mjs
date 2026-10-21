@@ -6,6 +6,7 @@ import {FeedingService} from './services/feedingService.mjs';
 import {Storage} from './storage/database.mjs';
 import {migrateLegacy} from './storage/legacyMigration.mjs';
 import {createApiRouter} from './routes/index.mjs';
+import {createVisionRouter} from './routes/vision.mjs';
 
 const validIdentifier=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,96}$/.test(value);
 function epochSeconds(value,fallback){
@@ -97,5 +98,6 @@ export function createBackend({dataDir,legacyFile,brokerUrl,prefix='duylinh0212/
   const timer=setInterval(tick,1000);timer.unref();
   const connected=()=>injected?true:!!client?.connected;
   const {router,device}=createApiRouter({db,service,clock,connected});
+  router.use('/vision',createVisionRouter({service,clock}));
   return {router,service,db,device,onMessage,tick,connected,close(){clearInterval(timer);client?.end(true);db.close();}};
 }

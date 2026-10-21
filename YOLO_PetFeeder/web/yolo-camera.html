@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PetFeeder · Camera chó/mèo</title>
+    <link rel="stylesheet" href="/web/css/style.css">
+    <link rel="stylesheet" href="/web/css/camera.css">
+</head>
+<body>
+<div class="app-container camera-app">
+    <header>
+        <div class="header-title-group">
+            <h1>Camera thú cưng</h1>
+            <p>Nhận diện chó và mèo bằng YOLO · PetFeeder</p>
+        </div>
+        <span id="connection" role="status">Đang kết nối YOLO…</span>
+    </header>
+    <main class="camera-layout">
+        <section aria-label="Camera nhận diện">
+            <div class="camera-toolbar">
+                <div class="camera-picker">
+                    <label for="camera-select">Nguồn camera</label>
+                    <select id="camera-select" class="select-input"><option value="">Camera mặc định</option></select>
+                </div>
+                <button id="start-camera" class="btn btn-primary">Mở camera</button>
+                <button id="stop-camera" class="btn btn-secondary" disabled>Dừng</button>
+            </div>
+            <div class="camera-stage">
+                <video id="camera-video" autoplay playsinline muted hidden></video>
+                <canvas id="camera-view" width="960" height="540" hidden aria-label="Khung hình cùng vị trí chó và mèo"></canvas>
+                <p id="camera-placeholder">Mở camera và đưa thú cưng vào khung hình để bắt đầu.</p>
+            </div>
+            <p id="camera-message" class="camera-message" role="status">Camera đang tắt.</p>
+            <div class="camera-upload">
+                <label for="test-image">Hoặc thử bằng một ảnh chó/mèo</label>
+                <input id="test-image" type="file" accept="image/*">
+            </div>
+        </section>
+        <aside class="camera-results" aria-label="Kết quả nhận diện">
+            <h2>Kết quả hiện tại</h2>
+            <p id="pet-summary" class="pet-summary" aria-live="polite">Chưa có khung hình</p>
+            <ul id="detection-list" class="detection-list"></ul>
+            <p id="inference-time" class="camera-meta">Đang chờ nhận diện</p>
+            <div class="camera-settings">
+                <label for="confidence">Độ tin cậy tối thiểu: <output id="confidence-value" for="confidence">50%</output></label>
+                <input id="confidence" type="range" min="10" max="95" value="50" step="5">
+                <p>Tăng ngưỡng nếu nhận nhầm. Giảm ngưỡng nếu bỏ sót thú cưng.</p>
+            </div>
+            <div class="camera-integration">
+                <h2>Kết nối IoT</h2>
+                <p>Kết quả mới nhất tại <a href="/api/status" target="_blank" rel="noopener">/api/status</a>. Kết quả hết hạn sau 3 giây nếu không nhận thêm hình.</p>
+                <p>Đây là tín hiệu nhận diện. Lịch ăn và giới hạn giữa hai lần cho ăn do bộ điều khiển quyết định.</p>
+                <a href="/docs" target="_blank" rel="noopener">Xem tài liệu API</a>
+            </div>
+        </aside>
+    </main>
+</div>
+<script src="/web/js/camera.js"></script>
+</body>
+</html>
