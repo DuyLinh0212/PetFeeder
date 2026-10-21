@@ -1,67 +1,74 @@
-const express = require('express');
-const router = express.Router();
-const storage = require('../storage');
-const mqttClient = require('../mqttClient');
-
-/**
- * GET /api/device/status
- * Lấy trạng thái thời gian thực của thiết bị (FR-05, FR-06)
- */
-router.get('/status', (req, res) => {
-  try {
-    const state = storage.getDeviceState();
-    const config = storage.getDeviceConfig();
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        ...state,
-        mqtt_connected: mqttClient.isMQTTConnected(),
-        safe_interval_sec: config.safe_interval_sec,
-        empty_threshold_cm: config.empty_threshold_cm
-      }
-    });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
+const router = require("express").Router();
+const storage = require("../storage");
+const mqtt = require("../mqttClient");
+const { validate } = require("../deviceConfig");
+router.get("/status", (req, res) => {
+  const state = storage.getDeviceState(),
+    cfg = storage.getDeviceConfig();
+  const fresh =
+    state.last_seen && Date.now() - Date.parse(state.last_seen) <= 15000;
+  res.json({
+    success: true,
+    data: {
+      ...state,
+      online: !!(state.online && fresh),
+      mqtt_connected: mqtt.isMQTTConnected(),
+      safe_interval_sec: cfg.safe_interval_sec,
+      empty_threshold_cm: cfg.empty_threshold_cm,
+    },
+  });
 });
-
-/**
- * GET /api/device/config
- * Lấy cấu hình thiết bị
- */
-router.get('/config', (req, res) => {
-  try {
-    const config = storage.getDeviceConfig();
-    return res.status(200).json({
-      success: true,
-      data: config
-    });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-/**
- * PUT /api/device/config
- * Cập nhật cấu hình thiết bị và đồng bộ xuống ESP32
- */
-router.put('/config', (req, res) => {
+router.get("/config", (req, res) =>
+  res.json({ success: true, data: storage.getDeviceConfig() }),
+);
+router.put("/config", async (req, res, next) => {
   try {
     const patch = req.body;
-    const updated = storage.updateDeviceConfig(patch);
-
-    // Đồng bộ cấu hình xuống ESP32 qua MQTT
-    mqttClient.syncConfigToDevice();
-
-    return res.status(200).json({
+    if (
+      !Object.keys(patch).length ||
+      !validate(patch, storage.getDeviceConfig())
+    )
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_CONFIG",
+        message: "Cấu hình ngoài giới hạn hoặc sai kiểu.",
+      });
+    const state = storage.getDeviceState();
+    if (
+      !mqtt.isMQTTConnected() ||
+      !state.online ||
+      Date.now() - Date.parse(state.last_seen) > 15000
+    )
+      return res.status(503).json({
+        success: false,
+        code: "DEVICE_OFFLINE",
+        message: "Thiết bị chưa trực tuyến.",
+      });
+    if (
+      state.busy &&
+      Object.keys(patch).some((k) => !["lockdown", "mark_refill"].includes(k))
+    )
+      return res.status(409).json({
+        success: false,
+        code: "DEVICE_BUSY",
+        message: "Chờ phiên cho ăn kết thúc trước khi đổi cấu hình.",
+      });
+    if (patch.mark_refill && patch.verify_refill)
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_CONFIG",
+        message: "Đánh dấu nạp hạt và xác nhận là hai thao tác riêng.",
+      });
+    await mqtt.syncConfigToDevice(patch);
+    const { mark_refill, verify_refill, ...persistent } = patch;
+    const updated = storage.updateDeviceConfig(persistent);
+    res.status(202).json({
       success: true,
-      message: 'Cập nhật cấu hình thành công',
-      data: updated
+      data: updated,
+      message: "Đã gửi. Trạng thái thiết bị sẽ cập nhật sau khi nhận cấu hình.",
     });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+  } catch (e) {
+    next(e);
   }
 });
-
 module.exports = router;

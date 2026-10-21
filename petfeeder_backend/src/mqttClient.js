@@ -1,257 +1,217 @@
-const mqtt = require('mqtt');
-const config = require('./config');
-const storage = require('./storage');
-
-let client = null;
-let isConnected = false;
-
-function initMQTT() {
-  console.log(`[MQTT] Connecting to broker at ${config.mqtt.brokerUrl}...`);
-
-  client = mqtt.connect(config.mqtt.brokerUrl, {
-    clientId: `petfeeder_backend_${Math.random().toString(16).substring(2, 8)}`,
-    clean: true,
-    connectTimeout: 5000,
-    reconnectPeriod: 3000
-  });
-
-  client.on('connect', () => {
-    isConnected = true;
-    console.log(` [MQTT] Connected successfully to ${config.mqtt.brokerUrl}`);
-
-    // Subscribe to topics from ESP32
-    const topicsToSub = [
-      config.mqtt.topics.telemetry,
-      config.mqtt.topics.events,
-      config.mqtt.topics.alerts
-    ];
-
-    client.subscribe(topicsToSub, (err) => {
-      if (err) {
-        console.error(' [MQTT] Subscription error:', err.message);
-      } else {
-        console.log(` [MQTT] Subscribed to topics:`, topicsToSub.join(', '));
-      }
-    });
-
-    // Auto sync schedules on connect
-    syncSchedulesToDevice();
-  });
-
-  client.on('message', (topic, message) => {
-    try {
-      const payloadStr = message.toString();
-      let payload;
-      try {
-        payload = JSON.parse(payloadStr);
-      } catch (e) {
-        payload = { raw: payloadStr };
-      }
-
-      handleIncomingMessage(topic, payload);
-    } catch (err) {
-      console.error(` [MQTT Error] Failed processing message on ${topic}:`, err.message);
-    }
-  });
-
-  client.on('error', (err) => {
-    console.error(' [MQTT Error]:', err.message);
-  });
-
-  client.on('close', () => {
-    if (isConnected) {
-      console.log(' [MQTT] Disconnected from broker.');
-    }
-    isConnected = false;
-  });
-
-  client.on('reconnect', () => {
-    console.log(' [MQTT] Reconnecting to broker...');
-  });
-
-  // Watchdog to mark device offline if no telemetry received for 15s
-  setInterval(() => {
-    const state = storage.getDeviceState();
-    if (state.last_seen) {
-      const diffMs = Date.now() - new Date(state.last_seen).getTime();
-      if (diffMs > 15000 && state.online) {
-        storage.updateDeviceState({ online: false });
-        console.log(' [Watchdog] Device marked OFFLINE (no telemetry for > 15s)');
-      }
-    }
-  }, 5000);
-}
-
-function handleIncomingMessage(topic, payload) {
-  // Telemetry
+const mqtt = require("mqtt");
+const config = require("./config");
+const storage = require("./storage");
+const { validate, fields } = require("./deviceConfig");
+let client = null,
+  connected = false,
+  watchdog;
+const finite = (value) => typeof value === "number" && Number.isFinite(value);
+function handleIncomingMessage(topic, p) {
+  if (!p || typeof p !== "object") return;
   if (topic === config.mqtt.topics.telemetry) {
+    if (p.device_id && p.device_id !== config.device.id) return;
+    const v2 = p.contract_version === 2;
     const patch = {
+      ...p,
       online: true,
-      system_status: payload.status || "SAN SANG",
-      food_level_percent: payload.food_level_percent !== undefined ? payload.food_level_percent : 0,
-      distance_cm: payload.distance_cm !== undefined ? payload.distance_cm : 0,
-      bowl_weight_g: payload.bowl_weight_g !== undefined ? payload.bowl_weight_g : 0,
-      ip_address: payload.ip || "192.168.1.100",
-      wifi_rssi: payload.rssi !== undefined ? payload.rssi : -60
+      system_status: p.status || "UNKNOWN",
+      last_seen: new Date().toISOString(),
+      contract_version: v2 ? 2 : 1,
+      lockdown: p.lockdown === true || p.is_safety_lockout === true,
+      hopper_verified: v2 && p.hopper_verified === true,
+      bowl_presence_available: v2 && p.bowl_presence_available === true,
+      bowl_present: v2 && p.bowl_present === true,
+      busy: v2 && p.busy === true,
+      active_command_id:
+        typeof p.active_command_id === "string" && p.active_command_id
+          ? p.active_command_id
+          : null,
+
+      scale_valid: v2 && p.scale_valid === true,
+      ultrasonic_valid: v2 && p.ultrasonic_valid === true,
+      bowl_weight_g:
+        v2 && p.scale_valid && finite(p.bowl_weight_g) ? p.bowl_weight_g : null,
+      distance_cm:
+        v2 && p.ultrasonic_valid && finite(p.distance_cm)
+          ? p.distance_cm
+          : null,
+      food_level_percent:
+        v2 && p.ultrasonic_valid && finite(p.food_level_percent)
+          ? p.food_level_percent
+          : null,
+      food_quality: "UNVERIFIED",
+      ip_address: p.ip || null,
+      wifi_rssi: finite(p.rssi) ? p.rssi : null,
     };
     storage.updateDeviceState(patch);
-  }
-
-  // Feed Result & Bowl Events
-  else if (topic === config.mqtt.topics.events) {
-    console.log(' [MQTT] Received event from ESP32:', payload);
-
-    // Xử lý sự kiện biến động bát ngoài phiên cấp (N13, N14)
-    if (payload.event === 'BOWL_EVENT') {
-      console.log(` [MQTT] Bowl Event: ${payload.type} (Delta: ${payload.delta_g}g, Current: ${payload.current_bowl_weight_g}g, Cause: ${payload.cause})`);
-      if (payload.type === 'MANUAL_REFILL') {
-        storage.addAlert({
-          level: 'info',
-          title: 'Nạp thức ăn thủ công',
-          message: `Phát hiện chủ nuôi đã nạp thêm ${payload.delta_g}g thức ăn trực tiếp vào bát.`
-        });
-      } else if (payload.type === 'WEIGHT_DECREASED') {
-        storage.addAlert({
-          level: 'info',
-          title: 'Khối lượng bát giảm',
-          message: `Khối lượng thức ăn trong bát giảm ${Math.abs(payload.delta_g)}g (Nguyên nhân: ${payload.cause || 'UNKNOWN_CAUSE'}).`
-        });
-      }
+    if (v2 && p.config_snapshot) {
+      const actual = Object.fromEntries(
+        Object.entries(p.config_snapshot).filter(
+          ([key]) => fields[key] || key === "lockdown",
+        ),
+      );
+      const current = storage.getDeviceConfig();
+      if (
+        validate(actual, current) &&
+        Object.entries(actual).some(([key, value]) => current[key] !== value)
+      )
+        storage.updateDeviceConfig(actual);
+    }
+  } else if (topic === config.mqtt.topics.events) {
+    if (typeof p.event_id !== "string" || p.event_id.length > 160) return;
+    if (p.event === "BOWL_EVENT") {
+      if (!storage.acceptEvent(p.event_id)) return;
+      storage.addAlert({
+        title:
+          p.type === "REFILL_SUSPECTED"
+            ? "Cần xác nhận hộp hạt"
+            : "Khối lượng bát thay đổi",
+        message: `${p.type}: ${p.delta_g ?? "?"} g · ${p.cause || "UNKNOWN_CAUSE"}`,
+        level: "info",
+      });
       return;
     }
-
-    const targetPortion = payload.target_portion_g !== undefined ? payload.target_portion_g : (payload.target_portion || payload.portion || 0);
-    const actualWeight = payload.actual_weight_g !== undefined ? payload.actual_weight_g : (payload.actual_weight || 0);
-
-    storage.addFeedingRecord({
-      command_id: payload.command_id || null,
-      trigger_source: payload.trigger_source || payload.source || "esp32",
-      target_portion_g: targetPortion,
-      actual_weight_g: actualWeight,
-      status: payload.status || "UNKNOWN",
-      error_code: payload.error_code || "NONE",
-      message: payload.message || `Cấp thức ăn trạng thái: ${payload.status}`,
-      duration_ms: payload.duration_ms || 0
+    const statuses = [
+      "ACCEPTED",
+      "DISPENSING",
+      "PAUSED",
+      "SUCCESS",
+      "PARTIAL",
+      "REJECTED",
+      "BLOCKED_DUPLICATE",
+      "FOOD_EMPTY",
+      "SENSOR_ERROR",
+      "JAM_ERROR",
+      "INTERRUPTED",
+      "TIMEOUT",
+      "COMMAND_EXPIRED",
+    ];
+    if (
+      typeof p.command_id !== "string" ||
+      !p.command_id ||
+      p.command_id.length > 64 ||
+      !Number.isInteger(p.revision) ||
+      p.revision < 1 ||
+      !statuses.includes(p.status)
+    )
+      return;
+    if (!finite(p.target_portion_g) || typeof p.measurement_valid !== "boolean")
+      return;
+    if (
+      p.measurement_valid &&
+      (!finite(p.actual_weight_g) || p.actual_weight_g < 0)
+    )
+      return;
+    if (
+      p.status === "SUCCESS" &&
+      (!p.measurement_valid ||
+        Math.abs(p.actual_weight_g - p.target_portion_g) >
+          (finite(p.portion_tolerance_g) &&
+          p.portion_tolerance_g > 0 &&
+          p.portion_tolerance_g <= 10
+            ? p.portion_tolerance_g
+            : storage.getDeviceConfig().portion_tolerance_g))
+    )
+      return;
+    storage.applyResult({
+      ...p,
+      actual_weight_g: p.measurement_valid ? p.actual_weight_g : null,
     });
-
-    // Check if error status to generate immediate alert
-    if (payload.status === 'JAM_ERROR') {
-      storage.addAlert({
-        level: 'error',
-        title: 'CẢNH BÁO KẸT HẠT!',
-        message: `Cơ cấu cấp thức ăn bị kẹt tại thời điểm ${new Date().toLocaleTimeString('vi-VN')}. ESP32 đã thử tự gỡ nhưng không thành công!`
-      });
-      storage.updateDeviceState({ system_status: "LOI KET HAT" });
-    } else if (payload.status === 'FOOD_EMPTY' || payload.status === 'EMPTY') {
-      storage.addAlert({
-        level: 'error',
-        title: 'HẾT THỨC ĂN TRONG HỘP!',
-        message: 'Hộp chứa đã hết thức ăn. Vui lòng nạp thêm thức ăn cho thú cưng.'
-      });
-      storage.updateDeviceState({ system_status: "LOI: HET HAT" });
-    } else if (payload.status === 'BLOCKED_DUPLICATE' || payload.status === 'BLOCKED') {
-      storage.addAlert({
-        level: 'warning',
-        title: 'Lệnh cho ăn bị chặn',
-        message: 'Hệ thống đã chặn lệnh cho ăn vì thời gian quá gần với bữa ăn trước hoặc trùng lặp.'
-      });
-    } else if (payload.status === 'SENSOR_ERROR') {
-      storage.addAlert({
-        level: 'error',
-        title: 'LỖI CẢM BIẾN!',
-        message: `Phát hiện lỗi phần cứng cảm biến: ${payload.error_code || 'SENSOR_FAULT'}. Vui lòng kiểm tra kết nối dây!`
-      });
-    }
-  }
-
-  // General Alerts
-  else if (topic === config.mqtt.topics.alerts) {
-    console.log(' [MQTT] Received alert from ESP32:', payload);
-    storage.addAlert({
-      level: payload.level || "warning",
-      title: payload.title || "Cảnh báo từ ESP32",
-      message: payload.message || JSON.stringify(payload)
-    });
+  } else if (
+    topic === config.mqtt.topics.alerts &&
+    typeof p.event_id === "string" &&
+    storage.acceptEvent(p.event_id)
+  ) {
+    storage.addAlert({ level: p.level, title: p.title, message: p.message });
   }
 }
-
-// Publish feed command to ESP32
-function publishFeedCommand(options) {
-  if (!client || !isConnected) {
-    console.warn(' [MQTT] Warning: publishing command while MQTT not connected to broker!');
-  }
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const payload = {
-    command_id: options.command_id || `cmd_${nowSec}_${Math.random().toString(16).substring(2, 6)}`,
-    command: "FEED",
-    portion: options.portion || 30,
-    target_portion_g: options.portion || 30,
-    override: !!options.override,
-    source: options.source || "app",
-    created_at: nowSec,
-    expires_at: nowSec + 60,
-    timestamp: nowSec
-  };
-
-  const payloadStr = JSON.stringify(payload);
-  client.publish(config.mqtt.topics.command, payloadStr, { qos: 1 }, (err) => {
-    if (err) {
-      console.error(' [MQTT] Failed to publish feed command:', err.message);
-    } else {
-      console.log(` [MQTT] Published feed command: ${payloadStr}`);
-    }
+function publish(topic, payload, retain = false) {
+  if (!connected || !client) return Promise.reject(new Error("MQTT_OFFLINE"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("MQTT_ACK_TIMEOUT")), 4000);
+    client.publish(
+      topic,
+      JSON.stringify(payload),
+      { qos: 1, retain },
+      (error) => {
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(payload);
+      },
+    );
   });
-
-  return payload;
 }
-
-// Sync schedules to ESP32 for offline execution (FR-04)
 function syncSchedulesToDevice() {
-  if (!client || !isConnected) return;
-
-  const schedules = storage.getSchedules();
-  // Filter active schedules
-  const syncList = schedules.map(s => ({
-    id: s.id,
-    time: s.time, // "HH:mm"
-    portion: s.portion_g,
-    enabled: s.enabled
-  }));
-
-  const payloadStr = JSON.stringify({
-    action: "SYNC_SCHEDULES",
-    count: syncList.length,
-    schedules: syncList,
-    timestamp: Math.floor(Date.now() / 1000)
+  const days = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+  return publish(
+    config.mqtt.topics.schedulesSync,
+    {
+      schedules: storage.getSchedules().map((s) => ({
+        id: s.id,
+        time: s.time,
+        portion: s.portion_g,
+        enabled: s.enabled,
+        days_mask: (s.days || days).reduce(
+          (mask, d) => mask | (1 << days.indexOf(d)),
+          0,
+        ),
+      })),
+    },
+    true,
+  ).catch((error) => {
+    console.error("[MQTT schedules]", error.message);
   });
-
-  client.publish(config.mqtt.topics.schedulesSync, payloadStr, { qos: 1, retain: true }, (err) => {
-    if (err) {
-      console.error(' [MQTT] Failed to sync schedules:', err.message);
-    } else {
-      console.log(` [MQTT] Synced ${syncList.length} schedules to ESP32`);
+}
+function syncConfigToDevice(patch = storage.getDeviceConfig()) {
+  // Owner acknowledgements are transient; retained confirmation would approve a later refill.
+  return publish(config.mqtt.topics.config, { config: patch }, false);
+}
+function initMQTT(factory = mqtt.connect) {
+  client = factory(config.mqtt.brokerUrl, {
+    clientId: `petfeeder_backend_${require("crypto").randomUUID()}`,
+    clean: true,
+    connectTimeout: 5000,
+    reconnectPeriod: 3000,
+  });
+  client.on("connect", () => {
+    connected = true;
+    client.subscribe([
+      config.mqtt.topics.telemetry,
+      config.mqtt.topics.events,
+      config.mqtt.topics.alerts,
+    ]);
+    syncSchedulesToDevice(); /* Device NVS owns safety/config after reboot. */
+  });
+  client.on("message", (topic, bytes, packet) => {
+    try {
+      if (packet?.retain) return;
+      handleIncomingMessage(topic, JSON.parse(bytes.toString()));
+    } catch (error) {
+      console.error("[MQTT input]", error.message);
     }
   });
-}
-
-// Publish config parameters to ESP32
-function syncConfigToDevice() {
-  if (!client || !isConnected) return;
-
-  const cfg = storage.getDeviceConfig();
-  const payloadStr = JSON.stringify({
-    action: "SYNC_CONFIG",
-    config: cfg
+  client.on("error", (error) => console.error("[MQTT]", error.message));
+  client.on("close", () => {
+    connected = false;
   });
-
-  client.publish(config.mqtt.topics.config, payloadStr, { qos: 1, retain: true });
+  watchdog = setInterval(() => {
+    const s = storage.getDeviceState();
+    if (s.online && Date.now() - Date.parse(s.last_seen) > 15000)
+      storage.updateDeviceState({ online: false });
+  }, 5000);
+  watchdog.unref();
+  return client;
 }
-
 module.exports = {
   initMQTT,
-  publishFeedCommand,
+  handleIncomingMessage,
   syncSchedulesToDevice,
   syncConfigToDevice,
-  isMQTTConnected: () => isConnected
+  publishFeedCommand: (payload) => publish(config.mqtt.topics.command, payload),
+  isMQTTConnected: () => connected,
+  close: () => {
+    clearInterval(watchdog);
+    client?.end();
+    connected = false;
+  },
 };
