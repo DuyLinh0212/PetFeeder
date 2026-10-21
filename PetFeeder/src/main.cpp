@@ -12,6 +12,7 @@
 #include <HX711.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -77,6 +78,10 @@ bool persist(){
     servo(false);storageOK=false;Serial.println("LỖI: Không lưu được trạng thái; đã khóa cơ cấu cấp để bảo vệ.");return false;
   }
   return true;
+}
+bool stateFileExists(){
+  struct stat fileInfo{};
+  return stat("/littlefs/state.json",&fileInfo)==0&&S_ISREG(fileInfo.st_mode);
 }
 #if WOKWI_SIM
 bool blankSimulationStorage(){
@@ -450,7 +455,7 @@ void setup(){
 #endif
   storageOK=LittleFS.begin(false);
   if(!storageOK){Serial.println("LỖI BỘ NHỚ: thiết bị đang khóa. Chỉ nhập INIT_NEW_DEVICE nếu đây là thiết bị mới, bộ nhớ chưa có dữ liệu.");}
-  if(storageOK&&LittleFS.exists("/state.json")){
+  if(storageOK&&stateFileExists()){
     File f=LittleFS.open("/state.json","r");if(deserializeJson(state,f)){storageOK=false;Serial.println("LỖI BỘ NHỚ: dữ liệu trạng thái bị hỏng; đã khóa cơ cấu cấp.");}f.close();
   }else if(storageOK){defaults();persist();}
   if(storageOK){
