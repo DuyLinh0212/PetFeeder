@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
-import 'camera_demo_screen.dart';
 import 'safety_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -70,9 +69,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     child: ListView(
       padding: AppTheme.pagePadding,
       children: [
-        const PageHeading(
-          title: 'Kết nối & cài đặt',
-          subtitle: 'Thiết lập máy chủ và chính sách cấp thức ăn.',
+        const FeederHero(
+          title: 'Cài đặt',
+          subtitle: 'Tùy chỉnh thiết bị và ứng dụng.',
+          icon: Icons.settings_rounded,
         ),
         SectionCard(
           child: Form(
@@ -88,13 +88,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: AppTheme.primaryLight,
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.wifi_rounded, color: AppTheme.primary, size: 22),
+                      child: const Icon(
+                        Icons.wifi_rounded,
+                        color: AppTheme.primary,
+                        size: 22,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
                         'Kết nối máy chủ',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ],
@@ -137,7 +144,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: FilledButton.icon(
                     onPressed: _testing ? null : _connect,
                     icon: _testing
-                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.wifi_find_rounded),
                     label: Text(_testing ? 'Đang kết nối…' : 'Lưu kết nối'),
                   ),
@@ -147,7 +158,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   Text(
                     _connectionMessage!,
                     style: TextStyle(
-                      color: _connectionOk ? AppTheme.accentGreen : AppTheme.accentCoral,
+                      color: _connectionOk
+                          ? AppTheme.accentGreen
+                          : AppTheme.accentCoral,
                       height: 1.5,
                     ),
                   ),
@@ -156,7 +169,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,
                   childrenPadding: const EdgeInsets.only(bottom: 8),
-                  title: const Text('Tùy chọn phát triển', style: TextStyle(fontSize: 13, color: AppTheme.textMuted)),
+                  title: const Text(
+                    'Tùy chọn phát triển',
+                    style: TextStyle(fontSize: 13, color: AppTheme.textMuted),
+                  ),
                   children: [
                     Wrap(
                       spacing: 8,
@@ -164,11 +180,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         ActionChip(
                           label: const Text('Máy tính này'),
-                          onPressed: _testing ? null : () => _url.text = 'http://localhost:3000',
+                          onPressed: _testing
+                              ? null
+                              : () => _url.text = 'http://localhost:3000',
                         ),
                         ActionChip(
                           label: const Text('Giả lập Android'),
-                          onPressed: _testing ? null : () => _url.text = 'http://10.0.2.2:3000',
+                          onPressed: _testing
+                              ? null
+                              : () => _url.text = 'http://10.0.2.2:3000',
                         ),
                       ],
                     ),
@@ -183,32 +203,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           key: ValueKey(ApiService().baseUrl),
           onSaved: widget.onRefresh,
         ),
-        const SizedBox(height: 20),
-        SectionCard(
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const CircleAvatar(
-              backgroundColor: AppTheme.primaryLight,
-              child: Icon(Icons.camera_alt_rounded, color: AppTheme.primary),
-            ),
-            title: const Text('Camera AI · YOLO'),
-            subtitle: const Text('Mở camera để nhận diện chó/mèo và gửi kết quả mới cho thiết bị.'),
-            trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const CameraDemoScreen()),
-            ),
-          ),
-        ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
         const SectionCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('PetFeeder', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              Text(
+                'PetFeeder',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
               SizedBox(height: 8),
               Text(
                 'ESP32 · Servo cấp thức ăn · HX711 cân bát · MQTT và REST API · Lịch chạy trên thiết bị khi mất mạng.',
-                style: TextStyle(color: AppTheme.textMuted, fontSize: 13, height: 1.7),
+                style: TextStyle(
+                  color: AppTheme.textMuted,
+                  fontSize: 13,
+                  height: 1.7,
+                ),
               ),
             ],
           ),

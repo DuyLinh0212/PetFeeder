@@ -11,7 +11,11 @@
     { "type": "wokwi-pushbutton", "id": "btn", "top": 20, "left": -150, "attrs": { "color": "green" } },
     { "type": "wokwi-led", "id": "led_green", "top": 100, "left": -160, "attrs": { "color": "green" } },
     { "type": "wokwi-led", "id": "led_red", "top": 100, "left": -100, "attrs": { "color": "red" } },
-    { "type": "wokwi-buzzer", "id": "buzzer", "top": 160, "left": -130, "attrs": {} }
+    { "type": "wokwi-buzzer", "id": "buzzer", "top": 160, "left": -130, "attrs": {} },
+    { "type": "wokwi-pir-motion-sensor", "id": "approach_pir", "top": -240, "left": 250, "attrs": { "delayTime": "1" } },
+    { "type": "wokwi-photoresistor-sensor", "id": "ambient_light", "top": -140, "left": 430, "attrs": { "lux": "500", "threshold": "1.65" } },
+    { "type": "wokwi-resistor", "id": "approach_light_resistor", "top": 235, "left": 230, "attrs": { "resistance": "330" } },
+    { "type": "wokwi-led", "id": "approach_light", "top": 220, "left": 320, "attrs": { "color": "white" } }
   ],
   "connections": [
     [ "esp:GND.1", "ultrasonic:GND", "black", [ "v0" ] ],
@@ -36,7 +40,16 @@
     [ "esp:GND.1", "led_red:C", "black", [ "v0" ] ],
     [ "esp:15", "led_red:A", "red", [ "v0" ] ],
     [ "esp:GND.1", "buzzer:1", "black", [ "v0" ] ],
-    [ "esp:14", "buzzer:2", "purple", [ "v0" ] ]
+    [ "esp:14", "buzzer:2", "purple", [ "v0" ] ],
+    [ "esp:GND.1", "approach_pir:GND", "black", [ "v0" ] ],
+    [ "esp:3V3", "approach_pir:VCC", "red", [ "v0" ] ],
+    [ "esp:27", "approach_pir:OUT", "blue", [ "v0" ] ],
+    [ "esp:GND.2", "ambient_light:GND", "black", [ "v0" ] ],
+    [ "esp:3V3", "ambient_light:VCC", "red", [ "v0" ] ],
+    [ "esp:34", "ambient_light:DO", "blue", [ "v0" ] ],
+    [ "esp:26", "approach_light_resistor:1", "orange", [ "v0" ] ],
+    [ "approach_light_resistor:2", "approach_light:A", "orange", [ "v0" ] ],
+    [ "esp:GND.1", "approach_light:C", "black", [ "v0" ] ]
   ],
   "dependencies": {}
 }

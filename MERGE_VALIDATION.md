@@ -5,7 +5,7 @@ Merge giữ lịch sử; nhánh mobile đã chứa các commit firmware. Tài li
 
 ## Quyết định tích hợp
 
-- Giữ giao diện, bốn tab, trạng thái tab, kiểm tra địa chỉ và timeout của mobile. Ghép lưu kết nối, mã lệnh bền vững và cấu hình an toàn của Long.
+- Giữ giao diện mobile, trạng thái tab, kiểm tra địa chỉ và timeout. Thanh dưới có ba mục chính; Cài đặt mở từ biểu tượng bánh răng. Ghép lưu kết nối, mã lệnh bền vững và cấu hình an toàn của Long.
 - Giữ bộ điều khiển không chặn, LittleFS, SQLite, lịch offline, outbox/ACK, chống lặp và thời hạn lệnh của Long. Ghép cấp thô/tinh, sức chứa bát, giới hạn số lần/ngày và nhịp cấp, chống kẹt, theo dõi biến động bát của firmware.
 - Theo C03/C05: khoảng chờ bảo vệ bắt buộc, mặc định 180s; `override:true` bị từ chối, không có nút ép cấp. Không bỏ qua lỗi cảm biến, khóa cấp hoặc hạn mức.
 - Khẩu phần là lượng cấp thêm; không âm thầm cộng đủ khẩu phần khi vượt sức chứa bát. Cấp bù có xác nhận, chỉ phần còn thiếu đã biết, ID mới và `retry_of`; gửi lại qua mạng giữ nguyên ID/payload cũ.
@@ -36,7 +36,7 @@ CI Ubuntu lần đầu phát hiện SDK không có Roboto mà cache Windows cũ 
 
 | Case | Hành vi được giữ/tích hợp và bằng chứng | Giới hạn kiểm chứng |
 |---|---|---|
-| C01 | Bật yêu cầu nhận diện sẽ từ chối UNKNOWN_PET; test chính sách | Chưa có RFID/camera, chưa nhận diện thật |
+| C01 | Không xác minh danh tính thú trước khi cấp; nút mạch giữ khẩu phần 20 g và tuân thủ các giới hạn an toàn | Không suy ra thú đang đói hoặc đã ăn từ thao tác nhấn nút |
 | C02 | Kiểm tra khẩu phần, khoảng chờ, dự trù/tổng ngày và lượng bát; test C02, N01/N02 | Không suy ra thú đói từ lệnh |
 | C03 | Khóa phiên chung, chống lặp ID và khoảng chờ bắt buộc; test đồng thời/replay và UI | Cần thử dội nút vật lý |
 | C04 | FOOD_LEFT/WEIGHT_DECREASED/UNKNOWN là quan sát riêng, không ghi thú đã ăn; test C04 | Chưa xác định được nguyên nhân ăn/đổ hạt bằng cân |

@@ -25,7 +25,6 @@ class _SafetySettingsState extends State<SafetySettings> {
   };
 
   final values = {for (final key in fields.keys) key: TextEditingController()};
-  bool requirePet = false;
   bool loading = true;
   bool saving = false;
   String? error;
@@ -44,7 +43,6 @@ class _SafetySettingsState extends State<SafetySettings> {
         values[key]!.text = '${config[key]}';
       }
       setState(() {
-        requirePet = config['require_pet'] == true;
         loading = false;
         error = null;
       });
@@ -64,7 +62,7 @@ class _SafetySettingsState extends State<SafetySettings> {
       error = null;
     });
     try {
-      final patch = <String, dynamic>{'require_pet': requirePet};
+      final patch = <String, dynamic>{};
       for (final key in fields.keys) {
         final parsed = key == 'tolerance_g'
             ? num.tryParse(values[key]!.text.trim())
@@ -113,15 +111,6 @@ class _SafetySettingsState extends State<SafetySettings> {
         if (loading)
           const LinearProgressIndicator()
         else ...[
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Bắt buộc camera phát hiện chó/mèo'),
-            subtitle: const Text(
-              'Cần mở camera và nhận diện mới từ YOLO trước khi cấp. Chức năng này chỉ nhận biết loài chó/mèo, chưa xác minh đúng cá thể đã đăng ký.',
-            ),
-            value: requirePet,
-            onChanged: saving ? null : (value) => setState(() => requirePet = value),
-          ),
           ExpansionTile(
             tilePadding: EdgeInsets.zero,
             childrenPadding: const EdgeInsets.only(bottom: 8),
@@ -132,7 +121,9 @@ class _SafetySettingsState extends State<SafetySettings> {
                   padding: const EdgeInsets.only(bottom: 10),
                   child: TextField(
                     controller: values[key],
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
                     decoration: InputDecoration(labelText: fields[key]),
                   ),
                 ),
@@ -140,7 +131,10 @@ class _SafetySettingsState extends State<SafetySettings> {
           ),
           if (error != null) ...[
             const SizedBox(height: 8),
-            Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            Text(
+              error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
           ],
           const SizedBox(height: 8),
           Wrap(
@@ -150,7 +144,10 @@ class _SafetySettingsState extends State<SafetySettings> {
                 onPressed: saving ? null : save,
                 child: Text(saving ? 'Đang lưu…' : 'Lưu chính sách'),
               ),
-              TextButton(onPressed: saving ? null : load, child: const Text('Tải lại')),
+              TextButton(
+                onPressed: saving ? null : load,
+                child: const Text('Tải lại'),
+              ),
             ],
           ),
         ],

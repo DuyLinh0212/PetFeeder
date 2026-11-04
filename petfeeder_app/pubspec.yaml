@@ -9,7 +9,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  camera: ^0.12.0+2
   shared_preferences: ^2.3.5
   http: ^1.2.1
 

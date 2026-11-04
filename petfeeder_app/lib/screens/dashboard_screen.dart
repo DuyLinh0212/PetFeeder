@@ -43,7 +43,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           context,
           error is FeedRequestException
               ? error.message
-              : 'Không nhận được kết quả. Kiểm tra trạng thái thiết bị trước khi gửi yêu cầu tiếp theo.',
+              : 'Chưa nhận được kết quả. Kiểm tra trạng thái thiết bị trước khi gửi yêu cầu tiếp theo.',
           error: true,
         );
       }
@@ -79,7 +79,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   String _systemLabel(String value) => switch (value.trim().toUpperCase()) {
-    'CONFIG_APPLIED' => 'Đã đồng bộ cấu hình',
+    'CONFIG_APPLIED' => 'Đã đồng bộ cài đặt',
     'CLOCK_SYNCED' => 'Đã đồng bộ giờ thiết bị',
     'TIME_INVALID' => 'Giờ thiết bị chưa đồng bộ',
     'DELIVERY_UNKNOWN' => 'Đang chờ thiết bị xác nhận kết quả',
@@ -92,7 +92,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'DAILY_FEED_LIMIT' => 'Đã đạt số bữa tối đa trong ngày',
     'BOWL_FULL' => 'Bát không còn đủ sức chứa',
     'BLOCKED_DUPLICATE' => 'Đã chặn yêu cầu gửi trùng',
-    'UNKNOWN_PET' => 'Chưa xác minh được thú cưng',
     'RECONCILIATION_REQUIRED' => 'Cần kiểm tra thiết bị trước khi cấp tiếp',
     'COMMAND_EXPIRED' => 'Yêu cầu đã hết hạn',
     'OVER_PORTION' => 'Đã dừng để tránh cấp quá lượng đặt',
@@ -108,223 +107,158 @@ class _DashboardScreenState extends State<DashboardScreen> {
   };
 
   Widget _metric({
-    required String label,
+    required String title,
     required String value,
+    required String footnote,
     required IconData icon,
-    required String caption,
-    bool highlighted = false,
-    Color? captionColor,
-    double? progress,
-  }) {
-    final foreground = highlighted ? Colors.white : AppTheme.textMain;
-    final muted = highlighted ? const Color(0xFFD4E4DC) : AppTheme.textMuted;
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: highlighted ? AppTheme.primaryDark : AppTheme.surface,
-        borderRadius: BorderRadius.circular(26),
-        border: highlighted ? null : Border.all(color: AppTheme.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    required Color iconColor,
+  }) => Container(
+    padding: const EdgeInsets.all(15),
+    decoration: BoxDecoration(
+      color: AppTheme.surface,
+      borderRadius: BorderRadius.circular(25),
+      border: Border.all(color: AppTheme.border),
+    ),
+    child: Row(
+      children: [
+        Container(
+          width: 48,
+          height: 48,
+          decoration: const BoxDecoration(
+            color: AppTheme.primaryLight,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: iconColor, size: 24),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 20, color: muted),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: muted,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
                 ),
+              ),
+              Text(
+                footnote,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: AppTheme.textLight, fontSize: 10),
               ),
             ],
           ),
-          const SizedBox(height: 14),
-          Text(
-            value,
-            style: TextStyle(
-              color: foreground,
-              fontSize: 36,
-              height: 1.1,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -1,
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (progress != null) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 6,
-                color: const Color(0xFFD5E9A8),
-                backgroundColor: Colors.white.withAlpha(30),
-              ),
-            ),
-            const SizedBox(height: 10),
-          ],
-          Text(
-            caption,
-            style: TextStyle(
-              color: captionColor ?? muted,
-              fontSize: 12,
-              height: 1.4,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
     final status = widget.status;
     final online = status?.online == true;
-    final known = status != null && online;
-    final bowlKnown = known && status.bowlWeightG != null;
-    final hopperKnown = known && status.foodLevelPercent != null;
     final maxPortion = status?.maxPortionG ?? 100;
-    final selectedPortion = _portion.clamp(
-      maxPortion < 10 ? maxPortion : 10,
-      maxPortion,
-    );
-    final bowl = _metric(
-      label: 'Khối lượng trong bát',
-      value: bowlKnown ? '${status.bowlWeightG!.toStringAsFixed(1)} g' : '—',
-      icon: Icons.rice_bowl_rounded,
-      caption: bowlKnown
-          ? 'Sức chứa tối đa ${status.bowlCapacityG} g'
-          : 'Chưa có số đo cân mới',
-    );
-    final hopper = _metric(
-      label: 'Mức thức ăn trong hộp',
-      value: hopperKnown ? '${status.foodLevelPercent}%' : '—',
-      icon: Icons.inventory_2_rounded,
-      highlighted: true,
-      caption: hopperKnown
-          ? status.distanceCm == null
-                ? 'Ước tính từ cảm biến siêu âm'
-                : 'Ước tính · cách mặt hạt ${status.distanceCm!.toStringAsFixed(1)} cm'
-          : 'Chưa có số đo cảm biến mới',
-    );
-    final dailyProgress = status == null || status.dailyLimitG == 0
-        ? 0.0
-        : (status.dailyDispensedG / status.dailyLimitG)
-              .clamp(0.0, 1.0)
-              .toDouble();
-    final daily = _metric(
-      label: 'Đã cấp hôm nay',
-      value: '${status?.dailyDispensedG.toStringAsFixed(0) ?? '0'} g',
-      icon: Icons.event_available_rounded,
-      highlighted: true,
-      caption:
-          '${status?.dailyFeedCount ?? 0}/${status?.maxDailyFeeds ?? 6} bữa · giới hạn ${status?.dailyLimitG ?? 200} g',
-      progress: dailyProgress,
-    );
+    final selectedPortion = _portion
+        .clamp(maxPortion < 10 ? maxPortion : 10, maxPortion)
+        .toInt();
+    final bowlKnown = online && status?.bowlWeightG != null;
+    final hopperKnown = online && status?.foodLevelPercent != null;
+
     return PageContent(
       child: RefreshIndicator(
         onRefresh: widget.onRefresh,
         child: ListView(
-          padding: AppTheme.pagePadding,
           physics: const AlwaysScrollableScrollPhysics(),
+          padding: AppTheme.pagePadding,
           children: [
-            const PageHeading(
-              title: 'Chăm bé mỗi ngày',
-              subtitle: 'Theo dõi thiết bị, chủ động từng bữa ăn.',
+            FeederHero(
+              title: 'Cho ăn',
+              subtitle: 'Bữa ăn của bé, chỉ một chạm.',
+              icon: Icons.rice_bowl_rounded,
+              badge: online ? 'Đang kết nối' : 'Ngoại tuyến',
             ),
-            if (widget.isLoading) ...[
+            if (widget.isLoading && status == null) ...[
               const LinearProgressIndicator(minHeight: 3),
               const SizedBox(height: 12),
             ],
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: AppTheme.primaryLight,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Icon(
-                      online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                      color: AppTheme.primary,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.isLoading && status == null
-                              ? 'Đang kết nối…'
-                              : online
-                              ? 'Đang trực tuyến'
-                              : 'Chưa trực tuyến',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          online
-                              ? _systemLabel(
-                                  status!.locked
-                                      ? 'RECONCILIATION_REQUIRED'
-                                      : status.systemStatus,
-                                )
-                              : 'Kiểm tra nguồn điện, Wi-Fi và địa chỉ trong Cài đặt.',
-                          style: const TextStyle(
-                            color: AppTheme.textMuted,
-                            fontSize: 12,
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final wide =
-                    constraints.maxWidth /
-                        MediaQuery.textScalerOf(context).scale(1) >=
-                    300;
-                if (!wide) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [bowl, const SizedBox(height: 12), hopper],
-                  );
-                }
-                return Column(
+            if (!online)
+              Container(
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryLight,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Row(
                   children: [
-                    IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(child: bowl),
-                          const SizedBox(width: 12),
-                          Expanded(child: hopper),
-                        ],
+                    Icon(Icons.wifi_off_rounded, color: AppTheme.primaryDark),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Kiểm tra nguồn điện, Wi-Fi và địa chỉ máy chủ trong Cài đặt.',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          height: 1.4,
+                        ),
                       ),
                     ),
                   ],
+                ),
+              ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final largeText =
+                    MediaQuery.textScalerOf(context).scale(1) > 1.1;
+                final wide = constraints.maxWidth >= 330 && !largeText;
+                final bowl = _metric(
+                  title: 'Thức ăn trong bát',
+                  value: bowlKnown
+                      ? '${status!.bowlWeightG!.toStringAsFixed(1)} g'
+                      : '—',
+                  footnote: bowlKnown
+                      ? 'Sức chứa ${status!.bowlCapacityG} g'
+                      : 'Đang chờ số cân mới',
+                  icon: Icons.rice_bowl_outlined,
+                  iconColor: AppTheme.primaryDark,
+                );
+                final hopper = _metric(
+                  title: 'Thức ăn trong hộp',
+                  value: hopperKnown ? '${status!.foodLevelPercent}%' : '—',
+                  footnote: hopperKnown
+                      ? status!.distanceCm == null
+                            ? 'Ước tính từ cảm biến'
+                            : 'Cách mặt hạt ${status!.distanceCm!.toStringAsFixed(1)} cm'
+                      : 'Đang chờ số đo cảm biến',
+                  icon: Icons.inventory_2_outlined,
+                  iconColor: AppTheme.primaryDark,
+                );
+                if (wide) {
+                  return Row(
+                    children: [
+                      Expanded(child: bowl),
+                      const SizedBox(width: 12),
+                      Expanded(child: hopper),
+                    ],
+                  );
+                }
+                return Column(
+                  children: [bowl, const SizedBox(height: 10), hopper],
                 );
               },
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             SectionCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -332,29 +266,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const Row(
                     children: [
                       Icon(
-                        Icons.restaurant_rounded,
-                        color: AppTheme.primary,
-                        size: 20,
+                        Icons.restaurant_menu_rounded,
+                        color: AppTheme.primaryDark,
                       ),
                       SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Cho ăn ngay',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                          ),
+                      Text(
+                        'Cho ăn thủ công',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Chọn lượng hạt cần cấp vào bát.',
+                    style: TextStyle(color: AppTheme.textMuted),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Hôm nay: ${status?.dailyDispensedG.toStringAsFixed(0) ?? '0'} g  ·  ${status?.dailyFeedCount ?? 0}/${status?.maxDailyFeeds ?? 6} lần',
+                    style: const TextStyle(
+                      color: AppTheme.textMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
                   PortionSelector(
                     value: selectedPortion,
                     max: maxPortion,
                     onChanged: _submitting
                         ? null
-                        : (v) => setState(() => _portion = v),
+                        : (value) => setState(() => _portion = value),
                   ),
                   const SizedBox(height: 4),
                   SizedBox(
@@ -373,45 +318,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(Icons.restaurant_rounded),
+                          : const Icon(Icons.rice_bowl_rounded),
                       label: Text(
                         _submitting
-                            ? 'Đang gửi…'
+                            ? 'Đang gửi yêu cầu…'
                             : 'Cho ăn · $selectedPortion g',
                       ),
                     ),
                   ),
-                  if (status?.sensorMode == 'DEMO_AUTO')
-                    const Text(
-                      'Số liệu HX711 đang được mô phỏng, chưa xác nhận lượng cấp thực tế.',
-                    ),
-                  if (status?.requirePet == true)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Text(
-                        'Đang yêu cầu xác minh thú. Mạch chưa có RFID/camera nên lệnh sẽ bị từ chối là UNKNOWN_PET.',
-                        style: TextStyle(
-                          color: AppTheme.accentAmber,
-                          fontSize: 12,
-                          height: 1.4,
-                        ),
-                      ),
-                    ),
+                  const SizedBox(height: 9),
                   Text(
                     online
-                        ? 'Khẩu phần là lượng cấp thêm. Thiết bị áp dụng khoảng chờ và giới hạn trong ngày.'
-                        : 'Kết nối thiết bị để cho bé ăn từ xa.',
+                        ? 'Thiết bị vẫn áp dụng khoảng chờ, giới hạn ngày và kiểm tra cân.'
+                        : 'Kết nối thiết bị để gửi yêu cầu cho ăn từ xa.',
                     style: const TextStyle(
                       fontSize: 12,
                       color: AppTheme.textMuted,
-                      height: 1.4,
+                      height: 1.45,
                     ),
                   ),
+                  if (status?.sensorMode == 'DEMO_AUTO')
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Số liệu cân đang được mô phỏng.',
+                        style: TextStyle(
+                          color: AppTheme.accentAmber,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-            daily,
           ],
         ),
       ),

@@ -10,7 +10,6 @@ function fixture(t){
   const service=new FeedingService(backend,{mode:'TEST',send(kind,payload){
     if(!device?.online)return false;
     if(kind==='sync')device.sync(payload);
-    else if(kind==='identity')device.setIdentity(payload);
     else if(kind==='command')device.receive(payload);
     return true;
   }},()=>now);
@@ -24,12 +23,6 @@ function fixture(t){
     command(source='APP',portion=20){return {command_id:`active-${++next}`,source,target_portion_g:portion,created_at:now,expires_at:now+60};},
     step(seconds){now+=seconds;device.tick();}};
 }
-
-test('C01 unknown pet is rejected when identity verification is enabled',t=>{
-  const f=fixture(t);f.service.configure({require_pet:true});
-  assert.equal(f.service.feed(f.command()).error_code,'UNKNOWN_PET');
-  assert.equal(f.device.s.active,null);
-});
 
 test('C03 duplicate IDs and simultaneous sources cannot start a second session',t=>{
   const f=fixture(t),first=f.command();f.service.feed(first);

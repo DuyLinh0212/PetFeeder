@@ -6,7 +6,6 @@ import {FeedingService} from './services/feedingService.mjs';
 import {Storage} from './storage/database.mjs';
 import {migrateLegacy} from './storage/legacyMigration.mjs';
 import {createApiRouter} from './routes/index.mjs';
-import {createVisionRouter} from './routes/vision.mjs';
 
 const validIdentifier=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,96}$/.test(value);
 function epochSeconds(value,fallback){
@@ -45,13 +44,14 @@ function normalizeHeartbeat(payload,clock){
     weight_g:weight,
     distance_cm:distance,
     food_level_percent:foodLevel,
+    approach_detected:payload.approach_detected===true,
+    approach_distance_cm:typeof payload.approach_distance_cm==='number'&&Number.isFinite(payload.approach_distance_cm)&&payload.approach_distance_cm>=0&&payload.approach_distance_cm<=400
+      ?payload.approach_distance_cm:null,
     ip:typeof payload.ip==='string'?payload.ip:'',
     rssi:Number.isInteger(payload.rssi)?payload.rssi:0,
     locked:payload.locked===true,
     time_valid:payload.time_valid===true,
     sensor_mode:typeof payload.sensor_mode==='string'?payload.sensor_mode:'UNKNOWN',
-    pet_detected_yolo:payload.pet_detected_yolo===true,
-    ...(typeof payload.pet_id==='string'?{pet_id:payload.pet_id}:{}),
     boot_id:typeof payload.boot_id==='string'?payload.boot_id:`legacy:${deviceId}`,
     config_version:typeof payload.config_version==='string'?payload.config_version:'',
   };
@@ -73,8 +73,6 @@ function normalizeEvent(payload,body,db,clock){
   if(['APP','BUTTON','SCHEDULE'].includes(payload.source))event.source=payload.source;
   if(typeof payload.target_portion_g==='number')event.target_portion_g=payload.target_portion_g;
   if(typeof payload.actual_weight_g==='number'||payload.actual_weight_g===null)event.actual_weight_g=payload.actual_weight_g;
-  for(const key of ['pet_id','recognition_id','recognition_source'])if(typeof payload[key]==='string')event[key]=payload[key].slice(0,96);
-  if(typeof payload.confidence==='number'&&Number.isFinite(payload.confidence))event.confidence=payload.confidence;
   if(typeof payload.error_code==='string')event.error_code=payload.error_code.slice(0,96);
   return {event,ackId:hasModernId?payload.event_id:null};
 }
@@ -123,6 +121,5 @@ export function createBackend({dataDir,legacyFile,brokerUrl,prefix='duylinh0212/
   const timer=setInterval(tick,1000);timer.unref();
   const connected=()=>injected?true:!!client?.connected;
   const {router,device}=createApiRouter({db,service,clock,connected});
-  router.use('/vision',createVisionRouter({service,clock}));
   return {router,service,db,device,onMessage,tick,connected,close(){clearInterval(timer);client?.end(true);db.close();}};
 }

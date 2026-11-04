@@ -5,6 +5,8 @@ class DeviceStatus {
   final double? bowlWeightG;
   final int? foodLevelPercent;
   final double? distanceCm;
+  final bool approachDetected;
+  final double? approachDistanceCm;
   final String ipAddress;
   final int wifiRssi;
   final String? lastSeen;
@@ -14,7 +16,6 @@ class DeviceStatus {
   final int dailyLimitG;
   final int maxDailyFeeds;
   final int bowlCapacityG;
-  final bool requirePet;
   final double dailyDispensedG;
   final int dailyFeedCount;
   final bool locked;
@@ -28,6 +29,8 @@ class DeviceStatus {
     required this.bowlWeightG,
     this.foodLevelPercent,
     this.distanceCm,
+    this.approachDetected = false,
+    this.approachDistanceCm,
     required this.ipAddress,
     required this.wifiRssi,
     required this.lastSeen,
@@ -37,7 +40,6 @@ class DeviceStatus {
     required this.dailyLimitG,
     required this.maxDailyFeeds,
     required this.bowlCapacityG,
-    required this.requirePet,
     required this.dailyDispensedG,
     required this.dailyFeedCount,
     required this.locked,
@@ -56,6 +58,8 @@ class DeviceStatus {
       bowlWeightG: (json['bowl_weight_g'] as num?)?.toDouble(),
       foodLevelPercent: (json['food_level_percent'] as num?)?.toInt(),
       distanceCm: (json['distance_cm'] as num?)?.toDouble(),
+      approachDetected: json['approach_detected'] == true,
+      approachDistanceCm: (json['approach_distance_cm'] as num?)?.toDouble(),
       ipAddress: json['ip_address'] as String? ?? '',
       wifiRssi: (json['wifi_rssi'] as num?)?.toInt() ?? 0,
       lastSeen: json['last_seen'] as String?,
@@ -65,12 +69,57 @@ class DeviceStatus {
       dailyLimitG: (json['daily_limit_g'] as num?)?.toInt() ?? 200,
       maxDailyFeeds: (json['max_daily_feeds'] as num?)?.toInt() ?? 6,
       bowlCapacityG: (json['bowl_capacity_g'] as num?)?.toInt() ?? 150,
-      requirePet: json['require_pet'] == true,
       dailyDispensedG: (daily['actual_dispensed_g'] as num?)?.toDouble() ?? 0,
       dailyFeedCount: (daily['confirmed_sessions'] as num?)?.toInt() ?? 0,
       locked: json['locked'] == true,
       timeValid: json['time_valid'] == true,
       sensorMode: json['sensor_mode'] as String? ?? 'UNKNOWN',
+    );
+  }
+}
+
+class FeedingRecord {
+  final String commandId;
+  final String source;
+  final double? targetPortionG;
+  final double? actualWeightG;
+  final String status;
+  final String? errorCode;
+  final DateTime? occurredAt;
+
+  const FeedingRecord({
+    required this.commandId,
+    required this.source,
+    required this.targetPortionG,
+    required this.actualWeightG,
+    required this.status,
+    required this.errorCode,
+    required this.occurredAt,
+  });
+
+  factory FeedingRecord.fromJson(Map<String, dynamic> json) {
+    DateTime? readDate(dynamic value) {
+      if (value is num) {
+        return DateTime.fromMillisecondsSinceEpoch(value.toInt() * 1000);
+      }
+      if (value is String) {
+        final epoch = num.tryParse(value);
+        if (epoch != null) {
+          return DateTime.fromMillisecondsSinceEpoch(epoch.toInt() * 1000);
+        }
+        return DateTime.tryParse(value);
+      }
+      return null;
+    }
+
+    return FeedingRecord(
+      commandId: json['command_id'] as String? ?? '',
+      source: json['source'] as String? ?? 'APP',
+      targetPortionG: (json['target_portion_g'] as num?)?.toDouble(),
+      actualWeightG: (json['actual_weight_g'] as num?)?.toDouble(),
+      status: json['status'] as String? ?? 'UNKNOWN',
+      errorCode: json['error_code'] as String?,
+      occurredAt: readDate(json['occurred_at']),
     );
   }
 }

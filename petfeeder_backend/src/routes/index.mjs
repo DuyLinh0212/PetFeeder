@@ -5,7 +5,6 @@ import {Invalid,object,identifier} from '../domain/feedingPolicy.mjs';
 const dayNames=['CN','T2','T3','T4','T5','T6','T7'];
 const rejectionMessages={
   TIME_INVALID:'Giờ thiết bị chưa đồng bộ với máy chủ.',
-  UNKNOWN_PET:'Chưa xác nhận được chó/mèo từ camera. Cần bật camera và chờ nhận diện mới.',
   COOLDOWN:'Hãy đợi hết khoảng chờ bảo vệ rồi thử lại.',
   DAILY_LIMIT:'Đã đạt tổng lượng thức ăn tối đa trong ngày.',
   DAILY_FEED_LIMIT:'Đã đạt số bữa tối đa trong ngày.',
@@ -47,9 +46,10 @@ export function createApiRouter({db,service,clock,connected}){
       system_status:s.connection==='BUSY'?'DANG CHO AN...':s.connection==='OFFLINE'?'NGOAI TUYEN':h.status||'SAN SANG',
       bowl_weight_g:h.weight_g??null,food_level_percent:h.food_level_percent??null,
       distance_cm:h.distance_cm??null,ip_address:h.ip||'',wifi_rssi:h.rssi??0,
+      approach_detected:h.approach_detected===true,approach_distance_cm:h.approach_distance_cm??null,
       min_interval_s:s.config.min_interval_s,max_portion_g:s.config.max_portion_g,
       daily_limit_g:s.config.daily_limit_g,max_daily_feeds:s.config.max_daily_feeds,
-      bowl_capacity_g:s.config.bowl_capacity_g,require_pet:s.config.require_pet,
+      bowl_capacity_g:s.config.bowl_capacity_g,
       daily:s.daily,locked:h.locked??true,time_valid:h.time_valid??false,
       sensor_mode:h.sensor_mode||'UNKNOWN',last_seen:h.received_at?new Date(h.received_at*1000).toISOString():null};
   }
@@ -59,6 +59,35 @@ export function createApiRouter({db,service,clock,connected}){
     const row=db.get('commands',req.params.id);
     if(!row)return res.status(404).json({success:false,code:'COMMAND_NOT_FOUND',message:'Chưa có kết quả cho mã lệnh này.'});
     return ok(res,row);
+  });
+  router.get('/feeding/history',(req,res)=>{
+    const requested=Number.parseInt(req.query.limit,10);
+    const limit=Number.isInteger(requested)?Math.min(100,Math.max(1,requested)):50;
+    const commandRecords=db.all('commands').map(row=>({
+      command_id:row.command_id,
+      source:row.source||'APP',
+      target_portion_g:row.target_portion_g??null,
+      actual_weight_g:row.actual_weight_g??null,
+      status:row.status||'UNKNOWN',
+      error_code:row.error_code||null,
+      occurred_at:row.occurred_at??row.updated_at??row.created_at??null,
+    }));
+    const legacyRecords=db.all('legacy_history').map((row,index)=>{
+      const parsed=typeof row.timestamp==='number'?row.timestamp:Date.parse(row.timestamp)/1000;
+      const actual=row.actual_weight_g??row.actual_g??null;
+      return {
+        command_id:row.command_id||row.id||`legacy-${index}`,
+        source:row.source||'APP',
+        target_portion_g:row.target_portion_g??row.portion_g??row.portion??null,
+        actual_weight_g:actual,
+        status:row.status||(typeof actual==='number'?'SUCCESS':'UNKNOWN'),
+        error_code:row.error_code||null,
+        occurred_at:row.occurred_at??(Number.isFinite(parsed)?parsed:null),
+      };
+    });
+    const records=[...commandRecords,...legacyRecords]
+      .sort((a,b)=>(b.occurred_at||0)-(a.occurred_at||0)).slice(0,limit);
+    ok(res,{records,daily:service.state().daily},{count:records.length});
   });
   router.get('/device/status',(req,res)=>ok(res,device()));
   router.get('/device/config',(req,res)=>ok(res,service.settings()));

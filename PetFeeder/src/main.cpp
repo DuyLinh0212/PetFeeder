@@ -16,6 +16,9 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#if !WOKWI_SIM
+#include <Adafruit_VL53L1X.h>
+#endif
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
@@ -26,6 +29,20 @@ constexpr int SERVO_PIN=13, BUTTON_PIN=4, DT_PIN=19, SCK_PIN=23;
 constexpr int TRIG_PIN=5, ECHO_PIN=18;
 constexpr float TANK_HEIGHT_CM=25.0f, HOPPER_CAPACITY_G=500.0f;
 constexpr int GREEN_PIN=2, RED_PIN=15, BUZZER_PIN=14;
+constexpr int APPROACH_LIGHT_PIN=26, APPROACH_PIR_PIN=27, AMBIENT_LIGHT_DO_PIN=34;
+constexpr uint16_t APPROACH_ENTER_MM=1200, APPROACH_EXIT_MM=1450;
+constexpr unsigned long APPROACH_HOLD_MS=5000;
+constexpr unsigned long AMBIENT_LIGHT_SAMPLE_MS=100;
+constexpr uint8_t AMBIENT_LIGHT_CONFIRM_SAMPLES=3;
+#if !WOKWI_SIM
+Adafruit_VL53L1X approachSensor;
+bool approachSensorOK=false;
+#endif
+bool approachActive=false,ambientDark=false;
+uint8_t approachNearSamples=0;
+uint8_t darkSamples=0,brightSamples=0;
+float approachDistanceCM=NAN;
+unsigned long approachUntil=0,ambientLightSampleAt=0;
 Adafruit_SSD1306 display(128,64,&Wire,-1);
 bool oledOK=false,simAuto=false;
 float pulseBaseline=0;
@@ -40,10 +57,13 @@ WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 HX711 scale;
 JsonDocument state;
-JsonDocument cameraIdentity;
 bool storageOK=false,weightOK=false,busy=false,motorOpen=false;
-float weightG=0,lastSample=0;
-float weightWindow[5]={0};int weightWindowCount=0,weightWindowIndex=0;
+constexpr size_t WEIGHT_FILTER_SAMPLES=5,WEIGHT_STABILITY_SAMPLES=3;
+float weightG=0,lastSample=0,weightSum=0;
+float weightSamples[WEIGHT_FILTER_SAMPLES]={0};
+size_t weightSampleCount=0,weightSampleIndex=0;
+float weightWindow[WEIGHT_STABILITY_SAMPLES]={0};
+size_t weightWindowCount=0,weightWindowIndex=0;
 unsigned long lastWeightAt=0;
 unsigned long sampleAt=0,stableAt=0,beatAt=0,publishAt=0,connectAt=0,scanAt=0,hopperAt=0;
 unsigned long feedAt=0,servoAt=0;
@@ -70,6 +90,43 @@ void updatePanel(){
   display.print("TT: ");display.println(!storageOK?"STORAGE LOCK":busy?"DANG CAP":uiStatus);
   display.print("MQTT: ");display.println(mqtt.connected()?"ON":"OFF");
   display.print(simAuto?"DEMO AUTO":"HX711 MANUAL");display.display();
+}
+void updateApproachLight(){digitalWrite(APPROACH_LIGHT_PIN,approachActive&&ambientDark?HIGH:LOW);}
+void updateAmbientLight(unsigned long ms){
+  if(ms-ambientLightSampleAt<AMBIENT_LIGHT_SAMPLE_MS)return;
+  ambientLightSampleAt=ms;
+  if(digitalRead(AMBIENT_LIGHT_DO_PIN)==HIGH){
+    brightSamples=0;
+    if(darkSamples<AMBIENT_LIGHT_CONFIRM_SAMPLES)darkSamples++;
+    if(!ambientDark&&darkSamples>=AMBIENT_LIGHT_CONFIRM_SAMPLES){ambientDark=true;updateApproachLight();}
+  }else{
+    darkSamples=0;
+    if(brightSamples<AMBIENT_LIGHT_CONFIRM_SAMPLES)brightSamples++;
+    if(ambientDark&&brightSamples>=AMBIENT_LIGHT_CONFIRM_SAMPLES){ambientDark=false;updateApproachLight();}
+  }
+}
+void updateApproachSensor(unsigned long ms){
+#if WOKWI_SIM
+  if(digitalRead(APPROACH_PIR_PIN)==HIGH){approachUntil=ms+APPROACH_HOLD_MS;}
+#else
+  if(approachSensorOK&&approachSensor.dataReady()){
+    const int16_t distance=approachSensor.distance();
+    approachSensor.clearInterrupt();
+    if(distance>0){
+      approachDistanceCM=distance/10.0f;
+      if(distance<=APPROACH_ENTER_MM){
+        if(approachNearSamples<2)approachNearSamples++;
+        if(approachNearSamples>=2)approachUntil=ms+APPROACH_HOLD_MS;
+      }else if(distance>=APPROACH_EXIT_MM){approachNearSamples=0;}
+    }
+  }
+#endif
+  const bool detected=approachUntil!=0&&(long)(ms-approachUntil)<0;
+  if(detected!=approachActive){
+    approachActive=detected;
+    updateApproachLight();
+    syncTelemetryPending=true;
+  }
 }
 
 bool persist(){
@@ -103,12 +160,35 @@ bool blankSimulationStorage(){
 #endif
 JsonObject cfg(){return state["config"].as<JsonObject>();}
 float cf(const char* key){return cfg()[key].as<float>();}
-void trackWeight(unsigned long ms){
-  weightDropped=busy&&weightG-lastSample < -2;
-  weightWindow[weightWindowIndex++%5]=weightG;if(weightWindowCount<5)weightWindowCount++;
-  float lo=weightG,hi=weightG;for(int i=0;i<weightWindowCount;i++){lo=min(lo,weightWindow[i]);hi=max(hi,weightWindow[i]);}
-  if(weightWindowCount<5||hi-lo>cf("tolerance_g"))stableAt=ms;
-  lastSample=weightG;lastWeightAt=ms;
+void resetWeightFilter(unsigned long ms){
+  weightSum=0;weightSampleCount=0;weightSampleIndex=0;
+  weightWindowCount=0;weightWindowIndex=0;
+  weightG=0;lastSample=0;weightDropped=false;stableAt=ms;
+}
+bool weightFilterReady(){return weightSampleCount>=WEIGHT_FILTER_SAMPLES;}
+void trackWeight(float sample,unsigned long ms){
+  if(!isfinite(sample)){resetWeightFilter(ms);return;}
+  if(weightSampleCount<WEIGHT_FILTER_SAMPLES){
+    weightSamples[weightSampleIndex]=sample;weightSum+=sample;weightSampleCount++;
+  }else{
+    weightSum+=sample-weightSamples[weightSampleIndex];weightSamples[weightSampleIndex]=sample;
+  }
+  weightSampleIndex=(weightSampleIndex+1)%WEIGHT_FILTER_SAMPLES;
+  const float filtered=weightSum/weightSampleCount;
+  weightG=filtered;
+  const bool ready=weightFilterReady();
+  weightDropped=busy&&ready&&filtered-lastSample < -2;
+  lastSample=filtered;
+  if(!ready){weightWindowCount=0;weightWindowIndex=0;stableAt=ms;}
+  else{
+    weightWindow[weightWindowIndex]=filtered;
+    weightWindowIndex=(weightWindowIndex+1)%WEIGHT_STABILITY_SAMPLES;
+    if(weightWindowCount<WEIGHT_STABILITY_SAMPLES)weightWindowCount++;
+    float lo=filtered,hi=filtered;
+    for(size_t i=0;i<weightWindowCount;i++){lo=min(lo,weightWindow[i]);hi=max(hi,weightWindow[i]);}
+    if(weightWindowCount<WEIGHT_STABILITY_SAMPLES||hi-lo>cf("tolerance_g"))stableAt=ms;
+  }
+  lastWeightAt=ms;
 }
 String id(){char b[17];snprintf(b,sizeof(b),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());return String(b);}
 void defaults(){
@@ -116,7 +196,6 @@ void defaults(){
   c["max_portion_g"]=100;c["daily_limit_g"]=200;c["min_interval_s"]=180;
   c["command_ttl_s"]=60;
   c["feed_timeout_s"]=30;c["tolerance_g"]=2;c["timezone_offset_min"]=420;
-  c["require_pet"]=false;
   c["bowl_capacity_g"]=150;c["max_daily_feeds"]=6;c["max_feed_pulses"]=15;
   c["coarse_fine_threshold_g"]=10;
   c["pulse_step_angle"]=90;c["pulse_step_ms"]=600;
@@ -165,7 +244,7 @@ const char* statusVi(const char* status){
 const char* errorVi(const char* code){
   if(!code)return nullptr;
   if(!strcmp(code,"TIME_INVALID"))return "Giờ ESP32 đang lệch; kiểm tra đồng bộ NTP hoặc đặt Wokwi về tốc độ 100%";
-  if(!strcmp(code,"UNKNOWN_PET"))return "Chưa xác nhận thú cưng";
+  if(!strcmp(code,"WEIGHT_DROP_DETECTED"))return "Số cân giảm bất thường khi đang cấp; servo đã dừng";
   if(!strcmp(code,"COOLDOWN"))return "Chưa hết khoảng chờ bảo vệ";
   if(!strcmp(code,"DAILY_LIMIT"))return "Đã chạm giới hạn khối lượng trong ngày";
   if(!strcmp(code,"DAILY_FEED_LIMIT"))return "Đã chạm số lần cho ăn tối đa trong ngày";
@@ -207,8 +286,6 @@ bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantCo
     e["command_id"]=c["command_id"];
     if(c["source"].is<const char*>())e["source"]=c["source"];
     if(numeric(c["target_portion_g"],0,500))e["target_portion_g"]=c["target_portion_g"];
-    for(const char* key:{"pet_id","recognition_id","recognition_source"})if(c[key].is<const char*>())e[key]=c[key];
-    if(numeric(c["confidence"],0.5,1))e["confidence"]=c["confidence"];
     e["actual_weight_g"].set(actual);
   }
   if(error)e["error_code"]=error;
@@ -248,48 +325,18 @@ void finish(const char* status,const char* error=nullptr,bool known=true){
   result(a,status,actual,error,known);
 }
 bool commandValid(JsonVariantConst c){
-  if(!c.is<JsonObjectConst>()||!(c.size()==5||c.size()==10)||!ident(c["command_id"])||!c["source"].is<const char*>())return false;
+  if(!c.is<JsonObjectConst>()||c.size()!=5||!ident(c["command_id"])||!c["source"].is<const char*>())return false;
   if(!((c["source"]=="APP")||(c["source"]=="SCHEDULE")||(c["source"]=="BUTTON"))||
      !numeric(c["target_portion_g"],1,cf("max_portion_g"))||!numeric(c["created_at"],1700000000,4102444800.0,true)||
      !numeric(c["expires_at"],1700000000,4102444800.0,true)||c["expires_at"].as<long>()<=c["created_at"].as<long>()||
      c["expires_at"].as<long>()-c["created_at"].as<long>()>300)return false;
-  if(c.size()==5)return true;
-  for(const char* key:{"pet_id","recognition_id","recognition_expires_at","recognition_source","confidence"})
-    if(c[key].isNull())return false;
-  return ident(c["pet_id"])&&ident(c["recognition_id"])&&
-    (c["pet_id"]=="species-cat"||c["pet_id"]=="species-dog")&&
-    numeric(c["recognition_expires_at"],1700000000,4102444800.0,true)&&
-    c["recognition_source"]=="YOLO_PET_PRESENCE"&&numeric(c["confidence"],0.5,1);
-}
-bool cameraValid(){
-  JsonObjectConst p=cameraIdentity.as<JsonObjectConst>();
-  if(p.isNull()||!validTime()||!p["camera_active"].as<bool>()||!p["matched"].as<bool>()||
-     p["source"]!="YOLO_PET_PRESENCE"||!ident(p["recognition_id"])||
-     !numeric(p["issued_at"],1700000000,4102444800.0,true)||!numeric(p["expires_at"],1700000000,4102444800.0,true)||
-     !numeric(p["confidence"],0.5,1))return false;
-  const long issued=p["issued_at"].as<long>(),expires=p["expires_at"].as<long>();
-  const bool cat=p["pet_type"]=="cat"&&p["pet_id"]=="species-cat";
-  const bool dog=p["pet_type"]=="dog"&&p["pet_id"]=="species-dog";
-  return (cat||dog)&&expires>nowSec()&&expires-issued<=5&&issued<=nowSec()+2;
-}
-bool petAllowed(JsonVariantConst c){
-  if(!cameraValid())return false;
-  JsonObjectConst p=cameraIdentity.as<JsonObjectConst>();
-  return c["pet_id"]==p["pet_id"]&&c["recognition_id"]==p["recognition_id"]&&
-    c["recognition_expires_at"].as<long>()==p["expires_at"].as<long>()&&
-    c["recognition_source"]==p["source"]&&fabs(c["confidence"].as<double>()-p["confidence"].as<double>())<0.0001;
-}
-void attachCameraEvidence(JsonObject c){
-  if(!cameraValid())return;
-  JsonObjectConst p=cameraIdentity.as<JsonObjectConst>();
-  c["pet_id"]=p["pet_id"];c["recognition_id"]=p["recognition_id"];
-  c["recognition_expires_at"]=p["expires_at"];c["recognition_source"]=p["source"];c["confidence"]=p["confidence"];
+  return true;
 }
 void receive(JsonVariantConst c){
   if(!c.is<JsonObjectConst>()||!ident(c["command_id"])){event("REJECTED","INVALID_FIELD");return;}
   for(JsonObject old:state["history"].as<JsonArray>())if(old["command"]["command_id"]==c["command_id"]){
     // Compare semantic fields, independent of JSON field order.
-    for(const char* k:{"source","target_portion_g","created_at","expires_at","pet_id","recognition_id","recognition_expires_at","recognition_source","confidence"})if(old["command"][k]!=c[k]){event("REJECTED","COMMAND_ID_CONFLICT");return;}
+    for(const char* k:{"source","target_portion_g","created_at","expires_at"})if(old["command"][k]!=c[k]){event("REJECTED","COMMAND_ID_CONFLICT");return;}
     event("BLOCKED_DUPLICATE");
     JsonDocument val;val.set(old["actual_weight_g"]);emit(old["status"].as<const char*>(),c,val.as<JsonVariantConst>(),old["error_code"].as<const char*>());return;
   }
@@ -306,8 +353,7 @@ void receive(JsonVariantConst c){
   }
   if(state["locked"].as<bool>()||state["events"].size()>MAX_EVENTS-6){reject(c,"RECONCILIATION_REQUIRED");return;}
   if(busy){reject(c,"BUSY");return;}
-  if(cfg()["require_pet"].as<bool>()&&!petAllowed(c)){reject(c,"UNKNOWN_PET");return;}
-  if(!state["calibrated"].as<bool>()||!weightOK||millis()-stableAt<700){reject(c,bowlMissing?"BOWL_MISSING":"SENSOR_ERROR");return;}
+  if(!state["calibrated"].as<bool>()||!weightOK||!weightFilterReady()||millis()-stableAt<700){reject(c,bowlMissing?"BOWL_MISSING":"SENSOR_ERROR");return;}
   if(now-state["last_end"].as<long>()<cf("min_interval_s")){reject(c,"COOLDOWN");return;}
   String day=dayKey(now);
   if(state["day"].as<String>()!=day){state["day"]=day;state["used_g"]=0;state["feed_count"]=0;}
@@ -323,7 +369,7 @@ void receive(JsonVariantConst c){
   JsonDocument zero;zero.set(0);emit("ACCEPTED",c,zero.as<JsonVariantConst>());emit("DISPENSING",c,zero.as<JsonVariantConst>());
 }
 bool configValid(JsonVariantConst c){
-  if(!c.is<JsonObjectConst>()||c.size()!=14)return false;
+  if(!c.is<JsonObjectConst>()||c.size()!=13)return false;
   struct Bound{const char* key;float lo,hi;};
   Bound bs[]={{"max_portion_g",1,500},{"daily_limit_g",1,2000},{"min_interval_s",1,86400},{"command_ttl_s",5,300},
     {"feed_timeout_s",5,120},{"tolerance_g",0.1,10},{"timezone_offset_min",-720,840},
@@ -331,8 +377,7 @@ bool configValid(JsonVariantConst c){
     {"coarse_fine_threshold_g",1,100},
     {"pulse_step_angle",1,180},{"pulse_step_ms",100,2000}};
   for(auto b:bs)if(!numeric(c[b.key],b.lo,b.hi,strcmp(b.key,"tolerance_g")!=0))return false;
-  return c["require_pet"].is<bool>()&&
-    c["max_portion_g"].as<float>()<=c["daily_limit_g"].as<float>()&&c["tolerance_g"].as<float>()<c["max_portion_g"].as<float>();
+  return c["max_portion_g"].as<float>()<=c["daily_limit_g"].as<float>()&&c["tolerance_g"].as<float>()<c["max_portion_g"].as<float>();
 }
 bool scheduleValid(JsonVariantConst items,float maxPortion){
   if(!items.is<JsonArrayConst>()||items.size()>10)return false;
@@ -352,15 +397,6 @@ void callback(char* topic,byte* payload,unsigned int length){
     if(state["events"].size()&&state["events"][0]["event_id"]==d["event_id"]){state["events"].as<JsonArray>().remove(0);persist();}return;
   }
   if(t==root+"/command"){receive(d.as<JsonVariantConst>());return;}
-  if(t==root+"/identity"){
-    bool valid=d.is<JsonObjectConst>()&&ident(d["recognition_id"])&&ident(d["pet_id"])&&
-      d["source"]=="YOLO_PET_PRESENCE"&&d["camera_active"].is<bool>()&&d["matched"].is<bool>()&&
-      numeric(d["issued_at"],1700000000,4102444800.0,true)&&numeric(d["expires_at"],1700000000,4102444800.0,true)&&
-      numeric(d["confidence"],0,1);
-    if(valid&&d["matched"].as<bool>())valid=(d["pet_type"]=="cat"&&d["pet_id"]=="species-cat"||d["pet_type"]=="dog"&&d["pet_id"]=="species-dog")&&d["confidence"].as<float>()>=0.5;
-    if(valid)cameraIdentity.set(d);else cameraIdentity.clear();
-    syncTelemetryPending=true;return;
-  }
   if(t==root+"/sync"){
     // Clock correction is independent of config validity: bad config must not
     // leave the device using an invalid or stale clock.
@@ -409,7 +445,7 @@ void scanSchedules(){
       if(!persist())return;
       if(now-due>=60){event("MISSED_SCHEDULE",key.c_str());continue;}
       JsonDocument c;c["command_id"]="sch:"+key;c["source"]="SCHEDULE";c["target_portion_g"]=s["target_portion_g"];
-      c["created_at"]=now;c["expires_at"]=now+(int)cf("command_ttl_s");attachCameraEvidence(c.as<JsonObject>());receive(c.as<JsonVariantConst>());
+      c["created_at"]=now;c["expires_at"]=now+(int)cf("command_ttl_s");receive(c.as<JsonVariantConst>());
     }
   }
   state["last_scan"]=now;
@@ -417,6 +453,8 @@ void scanSchedules(){
 }
 void heartbeat(){
   JsonDocument h;h["device_id"]=DEVICE_ID;h["status"]=busy?"DANG CHO AN...":uiStatus;
+  h["approach_detected"]=approachActive;
+  if(isfinite(approachDistanceCM))h["approach_distance_cm"]=approachDistanceCM;else h["approach_distance_cm"]=nullptr;
   if(weightOK)h["bowl_weight_g"]=weightG;else h["bowl_weight_g"]=nullptr;
   if(isfinite(distanceCM)){
     h["distance_cm"]=distanceCM;
@@ -427,7 +465,6 @@ void heartbeat(){
   h["locked"]=state["locked"].as<bool>()||!storageOK;
   h["outbox"]=state["events"].size();h["mode"]="ESP32";h["boot_id"]=bootId;h["config_version"]=state["config_version"];
   h["daily_dispensed_g"]=state["used_g"];h["daily_feed_count"]=state["feed_count"];
-  h["pet_detected_yolo"]=cameraValid();if(cameraValid())h["pet_id"]=cameraIdentity["pet_id"];
   String b;serializeJson(h,b);if(!mqtt.publish((root+"/telemetry").c_str(),b.c_str(),false))Serial.println("TELEMETRY_PUBLISH_FAILED");
 }
 void serialCommand(String line){
@@ -452,6 +489,15 @@ void setup(){
   ledcSetup(0,50,16);ledcAttachPin(SERVO_PIN,0);servo(false);
   pinMode(GREEN_PIN,OUTPUT);pinMode(RED_PIN,OUTPUT);pinMode(BUZZER_PIN,OUTPUT);
   Wire.begin(21,22);oledOK=display.begin(SSD1306_SWITCHCAPVCC,0x3c);
+  pinMode(APPROACH_LIGHT_PIN,OUTPUT);digitalWrite(APPROACH_LIGHT_PIN,LOW);
+  pinMode(AMBIENT_LIGHT_DO_PIN,INPUT);
+#if WOKWI_SIM
+  pinMode(APPROACH_PIR_PIN,INPUT_PULLDOWN);
+#else
+  approachSensorOK=approachSensor.begin(VL53L1X_I2C_ADDR,&Wire,false);
+  if(approachSensorOK){approachSensor.setTimingBudget(50);approachSensorOK=approachSensor.startRanging();}
+  if(!approachSensorOK)Serial.println("CẢM BIẾN KHOẢNG CÁCH VL53L1X KHÔNG SẴN SÀNG; đèn soi tự động không hoạt động.");
+#endif
   pinMode(BUTTON_PIN,INPUT_PULLUP);pinMode(TRIG_PIN,OUTPUT);pinMode(ECHO_PIN,INPUT);scale.begin(DT_PIN,SCK_PIN);
   // Only a fully erased Wokwi partition may be initialized automatically.
   // Existing data and real hardware must never be formatted on a mount failure.
@@ -472,7 +518,7 @@ void setup(){
     const char* keys[]={"max_portion_g","daily_limit_g","min_interval_s","command_ttl_s","feed_timeout_s","tolerance_g","timezone_offset_min","bowl_capacity_g","max_daily_feeds","max_feed_pulses","coarse_fine_threshold_g","pulse_step_angle","pulse_step_ms"};
     const int values[]={100,200,180,60,30,2,420,150,6,15,10,90,600};
     for(int i=0;i<13;i++)if(c[keys[i]].isNull()){c[keys[i]]=values[i];changed=true;}
-    if(c["require_pet"].isNull()){c["require_pet"]=false;changed=true;}
+    if(!c["require_pet"].isNull()){c.remove("require_pet");changed=true;}
     for(const char* key:{"tank_height_cm","empty_threshold_cm","observation_s","food_stale_s","food_confirmed","food_label","lockdown","anti_jam_max_retries"})if(!c[key].isNull()){c.remove(key);changed=true;}
     for(const char* key:{"observations","food_since","stale_alert"})if(!state[key].isNull()){state.remove(key);changed=true;}
     if(state["sim_hopper_g"].isNull()){state["sim_hopper_g"]=260;changed=true;}
@@ -527,9 +573,11 @@ void loop(){
       if(serialLine.length()){serialLine.remove(serialLine.length()-1);Serial.print("\b \b");}
     }else if(static_cast<uint8_t>(c)>=32&&serialLine.length()<4096){serialLine+=c;Serial.write(c);}
   }
+  unsigned long ms=millis();
+  updateAmbientLight(ms);
+  updateApproachSensor(ms);
   updatePanel();
   if(!storageOK){servo(false);delay(1);return;}
-  unsigned long ms=millis();
   weightDropped=false;
   if(ms-hopperAt>=500){
     hopperAt=ms;
@@ -557,24 +605,24 @@ void loop(){
         float gain=max(0.0f,min(finePulse?2.5f:5.0f,remaining));
         if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=max(0.0f,state["sim_hopper_g"].as<float>()-gain);servo(false);persist();Serial.printf("MÔ PHỎNG: lượng cân tăng %.1f g (số liệu giả lập).\n",gain);}
       }
-      float w=state["sim_bowl_g"].as<float>();weightOK=isfinite(w);bowlMissing=false;weightG=w;
-      trackWeight(ms);
+      float w=state["sim_bowl_g"].as<float>();weightOK=isfinite(w);bowlMissing=false;
+      if(weightOK)trackWeight(w,ms);else resetWeightFilter(ms);
     }else
 #endif
     if(scale.is_ready()){
       float w=(scale.read()-state["offset"].as<long>())/state["factor"].as<float>();
       // Proxy only: removing a bowl that was present during tare drives HX711 negative.
-      bowlMissing=isfinite(w)&&w<=-10;weightOK=isfinite(w)&&w>=-2&&w<=5000;weightG=max(0.0f,w);
-      trackWeight(ms);
-    }else if(ms-lastWeightAt>=1000)weightOK=false;
+      bowlMissing=isfinite(w)&&w<=-10;weightOK=isfinite(w)&&w>=-2&&w<=5000;
+      if(weightOK)trackWeight(max(0.0f,w),ms);else resetWeightFilter(ms);
+    }else if(ms-lastWeightAt>=1000&&weightOK){weightOK=false;resetWeightFilter(ms);}
   }
   if(busy){
     if(state["locked"].as<bool>())finish("INTERRUPTED","RECONCILIATION_REQUIRED",false);
     else if(!weightOK)finish(bowlMissing?"BOWL_MISSING":"SENSOR_ERROR",bowlMissing?"BOWL_MISSING":"MEASUREMENT_LOST",false);
     else{
       float actual=weightG-state["active"]["baseline"].as<float>(),target=state["active"]["target_portion_g"].as<float>();
-      if(weightDropped)finish("INTERRUPTED","INTERRUPTED_PET_FEEDING",false);
-      else if(ms-stableAt<700){
+      if(weightDropped)finish("INTERRUPTED","WEIGHT_DROP_DETECTED",false);
+      else if(!weightFilterReady()||ms-stableAt<700){
         if(motorOpen){servo(false);servoAt=ms;}
         if(ms-feedAt>=(unsigned long)(cf("feed_timeout_s")*1000))finish("SENSOR_ERROR","WEIGHT_UNSTABLE",false);
       }
@@ -594,7 +642,7 @@ void loop(){
     if(!mqtt.connected()&&!busy&&ms-connectAt>=3000){connectAt=ms;
       if(mqtt.connect(mqttClientId.c_str(),MQTT_USER,MQTT_PASS)){
         Serial.printf("Đã kết nối MQTT tới %s:%d.\n",MQTT_HOST,MQTT_PORT);
-        mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);mqtt.subscribe((root+"/identity").c_str(),1);beatAt=ms;heartbeat();
+        mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);beatAt=ms;heartbeat();
       }
     }
     if(mqtt.connected()){
@@ -613,6 +661,6 @@ void loop(){
   static bool wasDown=false;static unsigned long pressedAt=0;
   bool down=digitalRead(BUTTON_PIN)==LOW;
   if(down&&!wasDown&&ms-pressedAt>100){pressedAt=ms;if(!validTime()){event("TIME_INVALID");wasDown=down;return;}JsonDocument c;c["command_id"]="btn:"+id();c["source"]="BUTTON";
-    c["target_portion_g"]=20;c["created_at"]=nowSec();c["expires_at"]=nowSec()+(int)cf("command_ttl_s");attachCameraEvidence(c.as<JsonObject>());receive(c.as<JsonVariantConst>());}
+    c["target_portion_g"]=20;c["created_at"]=nowSec();c["expires_at"]=nowSec()+(int)cf("command_ttl_s");receive(c.as<JsonVariantConst>());}
   wasDown=down;delay(1);
 }

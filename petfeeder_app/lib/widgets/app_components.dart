@@ -47,6 +47,99 @@ class PageHeading extends StatelessWidget {
   );
 }
 
+class FeederHero extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final String? badge;
+  final IconData icon;
+  const FeederHero({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    this.badge,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 18),
+    padding: const EdgeInsets.fromLTRB(18, 18, 16, 18),
+    decoration: BoxDecoration(
+      color: AppTheme.surface,
+      borderRadius: BorderRadius.circular(30),
+      border: Border.all(color: const Color(0xFFF7FAFC)),
+      boxShadow: [
+        BoxShadow(
+          color: const Color(0xFF91B5C7).withAlpha(18),
+          blurRadius: 24,
+          offset: const Offset(0, 8),
+        ),
+      ],
+    ),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final compact =
+            constraints.maxWidth < 400 ||
+            MediaQuery.textScalerOf(context).scale(1) > 1.1;
+        final badgeWidget = badge == null
+            ? null
+            : StatusPill(
+                label: badge!,
+                color: AppTheme.accentGreen,
+                icon: Icons.circle,
+              );
+        return Row(
+          children: [
+            Container(
+              width: 78,
+              height: 78,
+              decoration: const BoxDecoration(
+                color: AppTheme.primaryLight,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: AppTheme.primaryDark, size: 38),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      height: 1.15,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: AppTheme.textMuted,
+                      fontSize: 13,
+                      height: 1.35,
+                    ),
+                  ),
+                  if (compact && badgeWidget != null) ...[
+                    const SizedBox(height: 8),
+                    badgeWidget,
+                  ],
+                ],
+              ),
+            ),
+            if (!compact && badgeWidget != null) ...[
+              const SizedBox(width: 8),
+              badgeWidget,
+            ],
+          ],
+        );
+      },
+    ),
+  );
+}
+
 class SectionCard extends StatelessWidget {
   final Widget child;
   const SectionCard({super.key, required this.child});

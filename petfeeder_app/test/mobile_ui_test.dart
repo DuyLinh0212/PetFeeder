@@ -54,6 +54,9 @@ class FakeBackend {
         'bowl_weight_g': 24.5,
       });
     }
+    if (path == '/api/feeding/history') {
+      return response({'records': []});
+    }
     if (path == '/api/id') {
       if (failId) return http.Response('<html>Not found</html>', 404);
       return http.Response(
@@ -69,7 +72,6 @@ class FakeBackend {
       return response({
         'food_confirmed': false,
         'food_label': '',
-        'require_pet': false,
         'max_portion_g': 100,
         'daily_limit_g': 200,
         'min_interval_s': 180,
@@ -146,7 +148,14 @@ Future<void> start(
 }
 
 Future<void> navigate(WidgetTester tester, String label) async {
-  await tester.tap(find.text(label));
+  final target = switch (label) {
+    'Cài đặt' => find.byTooltip('Cài đặt'),
+    'Tổng quan' || 'Cho ăn' => find.text('Cho ăn').last,
+    'Lịch ăn' || 'Kế hoạch cho ăn' => find.text('Kế hoạch\ncho ăn'),
+    'Lịch sử cho ăn' => find.text('Lịch sử\ncho ăn'),
+    _ => find.text(label),
+  };
+  await tester.tap(target);
   await tester.pumpAndSettle();
 }
 
@@ -222,7 +231,12 @@ void main() {
             'Bữa sáng đặc biệt dành cho thú cưng của gia đình';
         return http.runWithClient(() async {
           await start(tester, size: config.$1, scale: config.$2);
-          for (final tab in ['Tổng quan', 'Lịch ăn', 'Cài đặt']) {
+          for (final tab in [
+            'Lịch sử cho ăn',
+            'Cho ăn',
+            'Kế hoạch cho ăn',
+            'Cài đặt',
+          ]) {
             await navigate(tester, tab);
             expect(tester.takeException(), isNull);
             for (var i = 0; i < 5; i++) {
@@ -250,7 +264,9 @@ void main() {
       final button = tester.getRect(find.byKey(const ValueKey('feed-now')));
       expect(
         button.bottom,
-        lessThanOrEqualTo(tester.getTopLeft(find.byType(NavigationBar)).dy),
+        lessThanOrEqualTo(
+          tester.getTopLeft(find.byKey(const ValueKey('main-bottom-nav'))).dy,
+        ),
       );
       expect(find.text('24.5 g').hitTestable(), findsOneWidget);
       expect(api.requests.where((r) => r.method == 'POST'), isEmpty);
@@ -271,14 +287,14 @@ void main() {
       await capture(tester, 'feeding');
       await navigate(tester, 'Lịch ăn');
       await capture(tester, 'schedules');
-      await tester.tap(find.text('Thêm lịch ăn'));
+      await tester.tap(find.text('Thêm lịch mới'));
       await tester.pumpAndSettle();
       await capture(tester, 'schedule-editor');
       Navigator.of(tester.element(find.text('Lưu lịch ăn'))).pop();
       await tester.pumpAndSettle();
       await navigate(tester, 'Cài đặt');
       await capture(tester, 'settings');
-      await navigate(tester, 'Tổng quan');
+      await navigate(tester, 'Cho ăn');
       expect(find.text('Cho ăn · 60 g'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -403,8 +419,8 @@ void main() {
       return http.runWithClient(() async {
         await start(tester, size: const Size(320, 740), scale: 1.4);
         await navigate(tester, 'Lịch ăn');
-        await reveal(tester, find.text('Thêm lịch ăn'));
-        await tester.tap(find.text('Thêm lịch ăn'));
+        await reveal(tester, find.text('Thêm lịch mới'));
+        await tester.tap(find.text('Thêm lịch mới'));
         await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), 'Bữa tối');
         tester.view.viewInsets = const FakeViewPadding(bottom: 280);
@@ -446,7 +462,7 @@ void main() {
       api.empty = true;
       await tester.tap(find.text('Thử lại'));
       await tester.pumpAndSettle();
-      expect(find.text('Bữa ăn đầu tiên đang chờ'), findsOneWidget);
+      expect(find.text('Chưa có lịch cho ăn'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     }, () => MockClient(api.handle));
   });

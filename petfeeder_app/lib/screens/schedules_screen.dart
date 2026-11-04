@@ -116,31 +116,55 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
     showFeedback(context, 'Đã lưu lịch ăn lúc ${created.time}.');
   }
 
+  IconData _mealIcon(String time) {
+    final hour = int.tryParse(time.split(':').first) ?? 12;
+    if (hour < 10) return Icons.wb_twilight_rounded;
+    if (hour < 16) return Icons.wb_sunny_outlined;
+    if (hour < 20) return Icons.cloud_rounded;
+    return Icons.nightlight_round;
+  }
+
   Widget _scheduleCard(FeedingSchedule s) => SectionCard(
     child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: const BoxDecoration(
+                color: AppTheme.primaryLight,
+                borderRadius: BorderRadius.all(Radius.circular(18)),
+              ),
+              child: Icon(
+                _mealIcon(s.time),
+                color: AppTheme.primaryDark,
+                size: 28,
+              ),
+            ),
+            const SizedBox(width: 12),
             Expanded(
-              child: Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    s.time,
-                    style: TextStyle(
-                      fontSize: 30,
-                      height: 1.1,
+                    s.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 16,
                       fontWeight: FontWeight.w800,
-                      letterSpacing: -1,
-                      color: s.enabled ? AppTheme.textMain : AppTheme.textMuted,
                     ),
                   ),
-                  StatusPill(
-                    label: '${s.portionG} g',
-                    icon: Icons.rice_bowl_outlined,
+                  const SizedBox(height: 3),
+                  Text(
+                    '${s.time}  ·  ${s.days.length == 7 ? 'Mỗi ngày' : s.days.join(' · ')}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppTheme.textMuted,
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),
@@ -154,49 +178,32 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 6),
-        Text(
-          s.name,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: Divider(height: 1, color: AppTheme.border),
         ),
-        const SizedBox(height: 6),
         Row(
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    s.days.length == 7
-                        ? 'Lặp lại mỗi ngày'
-                        : s.days.join(' · '),
-                    style: const TextStyle(
-                      color: AppTheme.textMuted,
-                      fontSize: 12,
-                      height: 1.5,
-                    ),
-                  ),
-                  Text(
-                    s.enabled ? 'Đang bật' : 'Tạm dừng',
-                    style: TextStyle(
-                      fontSize: 12,
-                      height: 1.5,
-                      color: s.enabled
-                          ? AppTheme.accentGreen
-                          : AppTheme.textMuted,
-                    ),
-                  ),
-                ],
-              ),
+            const Icon(
+              Icons.rice_bowl_outlined,
+              color: AppTheme.textMain,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${s.portionG} g',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const Spacer(),
+            StatusPill(
+              label: s.enabled ? 'Đang bật' : 'Đã tạm dừng',
+              color: s.enabled ? AppTheme.accentGreen : AppTheme.textMuted,
+              icon: s.enabled ? Icons.check_rounded : Icons.pause_rounded,
             ),
             IconButton(
               tooltip: 'Xóa lịch ${s.name}',
               onPressed: _busy.contains(s.id) ? null : () => _delete(s),
-              icon: const Icon(
-                Icons.delete_outline_rounded,
-                size: 21,
-                color: AppTheme.textMuted,
-              ),
+              icon: const Icon(Icons.delete_outline_rounded, size: 21),
             ),
           ],
         ),
@@ -212,9 +219,12 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
         padding: AppTheme.pagePadding,
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
-          const PageHeading(
-            title: 'Lịch cho ăn',
-            subtitle: 'Giờ ăn đều đặn, khẩu phần vừa đủ.',
+          FeederHero(
+            title: 'Kế hoạch cho ăn',
+            subtitle: 'Thiết lập giờ ăn cho thú cưng.',
+            icon: Icons.schedule_rounded,
+            badge:
+                '${_schedules.where((schedule) => schedule.enabled).length} lịch bật',
           ),
           if (_loading)
             const Padding(
@@ -235,7 +245,7 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
             if (_schedules.isEmpty)
               const EmptyState(
                 icon: Icons.schedule_rounded,
-                title: 'Bữa ăn đầu tiên đang chờ',
+                title: 'Chưa có lịch cho ăn',
                 message:
                     'Thêm giờ ăn và khẩu phần. PetFeeder sẽ giúp bạn chăm bé đều đặn.',
               )
@@ -250,7 +260,7 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
             FilledButton.icon(
               onPressed: _add,
               icon: const Icon(Icons.add_rounded),
-              label: const Text('Thêm lịch ăn'),
+              label: const Text('Thêm lịch mới'),
             ),
           ],
         ],

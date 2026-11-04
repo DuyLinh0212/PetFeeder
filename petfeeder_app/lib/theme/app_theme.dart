@@ -1,19 +1,19 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const primary = Color(0xFF245C4F);
-  static const primaryDark = Color(0xFF183F36);
-  static const primaryLight = Color(0xFFE6EFE8);
-  static const darkSlate = Color(0xFF203A34);
-  static const background = Color(0xFFF6F5F0);
+  static const primary = Color(0xFF08B989);
+  static const primaryDark = Color(0xFF087A62);
+  static const primaryLight = Color(0xFFDDF9F1);
+  static const darkSlate = Color(0xFF183F3A);
+  static const background = Color(0xFFF2F7FB);
   static const surface = Color(0xFFFFFFFF);
-  static const accentGreen = Color(0xFF28745B);
-  static const accentAmber = Color(0xFF946217);
-  static const accentCoral = Color(0xFFB44838);
-  static const textMain = Color(0xFF233B35);
-  static const textMuted = Color(0xFF65736C);
-  static const textLight = Color(0xFF748078);
-  static const border = Color(0xFFE2E7DF);
+  static const accentGreen = Color(0xFF08A975);
+  static const accentAmber = Color(0xFFB47722);
+  static const accentCoral = Color(0xFFC44949);
+  static const textMain = Color(0xFF222A34);
+  static const textMuted = Color(0xFF68717D);
+  static const textLight = Color(0xFF808995);
+  static const border = Color(0xFFE2EAF0);
   static const pagePadding = EdgeInsets.fromLTRB(20, 12, 20, 24);
 
   static ThemeData get themeData {
@@ -56,9 +56,9 @@ class AppTheme {
         foregroundColor: textMain,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        centerTitle: false,
-        toolbarHeight: 64,
-        titleSpacing: 20,
+        centerTitle: true,
+        toolbarHeight: 58,
+        titleSpacing: 8,
       ),
       cardTheme: CardThemeData(
         color: surface,
@@ -67,7 +67,7 @@ class AppTheme {
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(28),
-          side: const BorderSide(color: border),
+          side: const BorderSide(color: Color(0xFFF4F7F9)),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(style: buttons),
