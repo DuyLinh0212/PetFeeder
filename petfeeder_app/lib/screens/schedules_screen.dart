@@ -182,30 +182,54 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
           padding: EdgeInsets.symmetric(vertical: 12),
           child: Divider(height: 1, color: AppTheme.border),
         ),
-        Row(
-          children: [
-            const Icon(
-              Icons.rice_bowl_outlined,
-              color: AppTheme.textMain,
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              '${s.portionG} g',
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-            const Spacer(),
-            StatusPill(
-              label: s.enabled ? 'Đang bật' : 'Đã tạm dừng',
-              color: s.enabled ? AppTheme.accentGreen : AppTheme.textMuted,
-              icon: s.enabled ? Icons.check_rounded : Icons.pause_rounded,
-            ),
-            IconButton(
-              tooltip: 'Xóa lịch ${s.name}',
-              onPressed: _busy.contains(s.id) ? null : () => _delete(s),
-              icon: const Icon(Icons.delete_outline_rounded, size: 21),
-            ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final compact =
+                constraints.maxWidth < 300 ||
+                MediaQuery.textScalerOf(context).scale(1) > 1.1;
+            final portion = Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.rice_bowl_outlined,
+                  color: AppTheme.textMain,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${s.portionG} g',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ],
+            );
+            final actions = Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                StatusPill(
+                  label: s.enabled ? 'Đang bật' : 'Đã tạm dừng',
+                  color: s.enabled ? AppTheme.accentGreen : AppTheme.textMuted,
+                  icon: s.enabled ? Icons.check_rounded : Icons.pause_rounded,
+                ),
+                IconButton(
+                  tooltip: 'Xóa lịch ${s.name}',
+                  onPressed: _busy.contains(s.id) ? null : () => _delete(s),
+                  icon: const Icon(Icons.delete_outline_rounded, size: 21),
+                ),
+              ],
+            );
+            if (compact) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Align(alignment: Alignment.centerLeft, child: portion),
+                  Align(alignment: Alignment.centerRight, child: actions),
+                ],
+              );
+            }
+            return Row(
+              children: [portion, const Spacer(), actions],
+            );
+          },
         ),
       ],
     ),

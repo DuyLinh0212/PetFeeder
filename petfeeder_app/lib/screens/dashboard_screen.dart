@@ -272,11 +272,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: AppTheme.primaryDark,
                       ),
                       SizedBox(width: 8),
-                      Text(
-                        'Cho ăn thủ công',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
+                      Expanded(
+                        child: Text(
+                          'Cho ăn thủ công',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                          ),
                         ),
                       ),
                     ],
