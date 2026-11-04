@@ -185,7 +185,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             FeederHero(
               title: 'Cho ăn',
-              subtitle: 'Bữa ăn của bé, chỉ một chạm.',
+              subtitle: online && status != null
+                  ? _systemLabel(status.systemStatus)
+                  : 'Bữa ăn của bé, chỉ một chạm.',
               icon: Icons.rice_bowl_rounded,
               badge: online ? 'Đang kết nối' : 'Ngoại tuyến',
             ),
@@ -239,7 +241,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   footnote: hopperKnown
                       ? status!.distanceCm == null
                             ? 'Ước tính từ cảm biến'
-                            : 'Cách mặt hạt ${status!.distanceCm!.toStringAsFixed(1)} cm'
+                            : 'Cách mặt hạt ${status.distanceCm!.toStringAsFixed(1)} cm'
                       : 'Đang chờ số đo cảm biến',
                   icon: Icons.inventory_2_outlined,
                   iconColor: AppTheme.primaryDark,
