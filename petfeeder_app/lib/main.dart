@@ -36,23 +36,59 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   final _visited = <int>{1};
   DeviceStatus? _deviceStatus;
   bool _isLoading = true;
+  bool _realtimeConnected = false;
+  bool _freshSnapshotAvailable = false;
   Future<void>? _pendingStatus;
-  Timer? _pollingTimer;
+  StreamSubscription<Map<String, dynamic>>? _realtimeSubscription;
+  int _historyRevision = 0;
+  int _scheduleRevision = 0;
 
   @override
   void initState() {
     super.initState();
     _fetchStatus();
-    _pollingTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => _fetchStatus(silent: true),
+    _realtimeSubscription = ApiService().watchRealtime().listen(
+      _handleRealtime,
     );
   }
 
   @override
   void dispose() {
-    _pollingTimer?.cancel();
+    _realtimeSubscription?.cancel();
     super.dispose();
+  }
+
+  void _handleRealtime(Map<String, dynamic> event) {
+    final type = event['type'];
+    final data = event['data'];
+    if (type == 'realtime_connection') {
+      final connected = event['connected'] == true;
+      if (mounted)
+        setState(() {
+          _realtimeConnected = connected;
+          if (connected) {
+            _historyRevision++;
+            _scheduleRevision++;
+          } else {
+            _freshSnapshotAvailable = false;
+          }
+        });
+    } else if ((type == 'snapshot' ||
+            type == 'device_state' ||
+            type == 'snapshot_fallback') &&
+        data is Map<String, dynamic>) {
+      if (mounted)
+        setState(() {
+          _deviceStatus = DeviceStatus.fromJson(data);
+          _freshSnapshotAvailable = true;
+        });
+    } else if (type == 'snapshot_unavailable') {
+      if (mounted) setState(() => _freshSnapshotAvailable = false);
+    } else if (type == 'feeding_event' || type == 'feeding_command') {
+      if (mounted) setState(() => _historyRevision++);
+    } else if (type == 'schedules_updated') {
+      if (mounted) setState(() => _scheduleRevision++);
+    }
   }
 
   Future<void> _fetchStatus({bool silent = false}) {
@@ -65,9 +101,17 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     if (!silent && mounted) setState(() => _isLoading = true);
     try {
       final status = await ApiService().getDeviceStatus();
-      if (mounted) setState(() => _deviceStatus = status);
+      if (mounted)
+        setState(() {
+          _deviceStatus = status;
+          _freshSnapshotAvailable = true;
+        });
     } catch (_) {
-      if (mounted) setState(() => _deviceStatus = null);
+      if (mounted)
+        setState(() {
+          _deviceStatus = null;
+          _freshSnapshotAvailable = false;
+        });
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -81,13 +125,15 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   @override
   Widget build(BuildContext context) {
     final screens = <Widget>[
-      HistoryScreen(onRefresh: _fetchStatus),
+      HistoryScreen(onRefresh: _fetchStatus, refreshToken: _historyRevision),
       DashboardScreen(
         status: _deviceStatus,
         isLoading: _isLoading,
+        realtimeConnected: _realtimeConnected,
+        freshSnapshotAvailable: _freshSnapshotAvailable,
         onRefresh: _fetchStatus,
       ),
-      const SchedulesScreen(),
+      SchedulesScreen(refreshToken: _scheduleRevision),
       SettingsScreen(onRefresh: () => unawaited(_fetchStatus())),
     ];
     return Scaffold(

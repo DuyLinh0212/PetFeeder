@@ -7,11 +7,15 @@ import '../widgets/app_components.dart';
 class DashboardScreen extends StatefulWidget {
   final DeviceStatus? status;
   final bool isLoading;
+  final bool realtimeConnected;
+  final bool freshSnapshotAvailable;
   final Future<void> Function() onRefresh;
   const DashboardScreen({
     super.key,
     required this.status,
     required this.isLoading,
+    this.realtimeConnected = true,
+    this.freshSnapshotAvailable = true,
     required this.onRefresh,
   });
   @override
@@ -195,6 +199,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const LinearProgressIndicator(minHeight: 3),
               const SizedBox(height: 12),
             ],
+            if (!widget.realtimeConnected)
+              Container(
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentAmber.withAlpha(20),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.sync_problem_rounded,
+                      color: AppTheme.accentAmber,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        widget.freshSnapshotAvailable
+                            ? 'Kết nối thời gian thực bị gián đoạn. Ứng dụng đang hiển thị trạng thái mới nhất qua API và tự kết nối lại.'
+                            : 'Mất kết nối thời gian thực và chưa tải được trạng thái mới. Thông tin đang hiển thị có thể đã cũ.',
+                        style: const TextStyle(
+                          color: AppTheme.textMuted,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (!online)
               Container(
                 margin: const EdgeInsets.only(bottom: 14),
@@ -212,6 +245,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         'Kiểm tra nguồn điện, Wi-Fi và địa chỉ máy chủ trong Cài đặt.',
                         style: TextStyle(
                           color: AppTheme.textMuted,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if ((status?.outboxOverflowCount ?? 0) > 0)
+              Container(
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentCoral.withAlpha(16),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      color: AppTheme.accentCoral,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Hàng đợi offline từng đầy; có ${status!.outboxOverflowCount} sự kiện chi tiết không lưu được. Lịch tại máy và nút vật lý vẫn hoạt động.',
+                        style: const TextStyle(
+                          color: AppTheme.textMain,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if ((status?.pendingEvents ?? 0) > 0)
+              Container(
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentAmber.withAlpha(20),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.sync_rounded, color: AppTheme.accentAmber),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Còn ${status!.pendingEvents} sự kiện đang chờ đồng bộ khi mạng trở lại.',
+                        style: const TextStyle(
+                          color: AppTheme.textMain,
                           height: 1.4,
                         ),
                       ),

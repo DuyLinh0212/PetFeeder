@@ -6,7 +6,8 @@ import '../widgets/app_components.dart';
 
 class HistoryScreen extends StatefulWidget {
   final Future<void> Function() onRefresh;
-  const HistoryScreen({super.key, required this.onRefresh});
+  final int refreshToken;
+  const HistoryScreen({super.key, required this.onRefresh, this.refreshToken=0});
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -23,6 +24,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant HistoryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if(widget.refreshToken!=oldWidget.refreshToken)_load();
   }
 
   Future<void> _load() async {

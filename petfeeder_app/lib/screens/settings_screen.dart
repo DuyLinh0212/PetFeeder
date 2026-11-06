@@ -42,6 +42,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final status = await ApiService().getDeviceStatus(serverUrl: candidate);
       if (!mounted) return;
+      await ApiService().saveConnectionAddress(candidate,serverUrl:candidate);
       await ApiService().setBaseUrl(candidate);
       if (!mounted) return;
       setState(() {

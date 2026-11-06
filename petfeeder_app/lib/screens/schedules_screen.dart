@@ -5,7 +5,8 @@ import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
 
 class SchedulesScreen extends StatefulWidget {
-  const SchedulesScreen({super.key});
+  final int refreshToken;
+  const SchedulesScreen({super.key,this.refreshToken=0});
   @override
   State<SchedulesScreen> createState() => _SchedulesScreenState();
 }
@@ -20,6 +21,12 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant SchedulesScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if(widget.refreshToken!=oldWidget.refreshToken)_load();
   }
 
   Future<void> _load() async {

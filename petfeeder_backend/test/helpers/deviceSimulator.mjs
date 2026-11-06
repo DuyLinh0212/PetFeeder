@@ -116,7 +116,6 @@ export class DeviceSimulator {
         else if(actual>0&&actual>=a.target_portion_g-cfg.tolerance_g)this.finish('SUCCESS',actual);
         else if(!Number.isFinite(this.sensors.distance_cm))this.finish('SENSOR_ERROR',actual,'ULTRASONIC_TIMEOUT');
         else if(this.sensors.jammed&&a.pulses>=cfg.anti_jam_max_retries)this.finish('JAM_ERROR',actual,'JAM_ERROR');
-        else if(a.pulses>=cfg.max_feed_pulses)this.finish(actual>0?'PARTIAL':'TIMEOUT',actual,'MAX_PULSES_REACHED');
         else if(now-a.started>=cfg.feed_timeout_s)this.finish(actual>0?'PARTIAL':'TIMEOUT',actual,'FEED_TIMEOUT');
       }
     }

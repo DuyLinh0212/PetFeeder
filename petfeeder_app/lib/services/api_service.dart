@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/models.dart';
 
 class FeedRequestException implements Exception {
@@ -85,13 +86,86 @@ class ApiService {
     baseUrl = candidate;
   }
 
+  Future<void> saveConnectionAddress(
+    String address, {
+    String? serverUrl,
+  }) async {
+    final endpoint = serverUrl ?? baseUrl;
+    final response = await _put(
+      Uri.parse('$endpoint/api/device/connection'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'connection_address': address}),
+    ).timeout(const Duration(seconds: 4));
+    if (response.statusCode != 200) {
+      final body = jsonDecode(utf8.decode(response.bodyBytes));
+      throw Exception(
+        body['message'] ?? 'Không lưu được địa chỉ kết nối lên máy chủ.',
+      );
+    }
+  }
+
+  Stream<Map<String, dynamic>> watchRealtime() async* {
+    var retrySeconds = 1;
+    while (true) {
+      WebSocketChannel? channel;
+      try {
+        final base = Uri.parse(baseUrl);
+        final uri = base.replace(
+          scheme: base.scheme == 'https' ? 'wss' : 'ws',
+          path: '/api/realtime',
+          query: null,
+          fragment: null,
+        );
+        channel = WebSocketChannel.connect(uri);
+        await channel.ready.timeout(const Duration(seconds: 5));
+        retrySeconds = 1;
+        yield {'type': 'realtime_connection', 'connected': true};
+        await for (final frame in channel.stream) {
+          try {
+            final decoded = jsonDecode(frame.toString());
+            if (decoded is Map<String, dynamic>) yield decoded;
+          } catch (_) {
+            // Ignore malformed frames and keep the live connection.
+          }
+        }
+      } catch (error) {
+        debugPrint('PetFeeder: WebSocket disconnected: $error');
+      } finally {
+        try {
+          await channel?.sink.close();
+        } catch (_) {}
+      }
+      yield {'type': 'realtime_connection', 'connected': false};
+      try {
+        yield {
+          'type': 'snapshot_fallback',
+          'data': await _getDeviceStatusJson(),
+        };
+      } catch (error) {
+        debugPrint('PetFeeder: snapshot fallback failed: $error');
+        yield {'type': 'snapshot_unavailable'};
+      }
+      await Future<void>.delayed(Duration(seconds: retrySeconds));
+      retrySeconds = (retrySeconds * 2).clamp(1, 15).toInt();
+    }
+  }
+
   // Trạng thái cân, giới hạn ngày và kết nối thiết bị.
   Future<DeviceStatus> getDeviceStatus({String? serverUrl}) async {
+    return DeviceStatus.fromJson(
+      await _getDeviceStatusJson(serverUrl: serverUrl),
+    );
+  }
+
+  Future<Map<String, dynamic>> _getDeviceStatusJson({String? serverUrl}) async {
     final uri = Uri.parse('${serverUrl ?? baseUrl}/api/device/status');
     final res = await _get(uri).timeout(const Duration(seconds: 4));
     if (res.statusCode == 200) {
       final data = jsonDecode(utf8.decode(res.bodyBytes));
-      return DeviceStatus.fromJson(data['data']);
+      if (data is Map<String, dynamic> && data['data'] is Map) {
+        return Map<String, dynamic>.from(data['data'] as Map);
+      }
+      throw const FormatException('Invalid device status response');
     } else {
       throw Exception('Lỗi đọc trạng thái: ${res.statusCode}');
     }

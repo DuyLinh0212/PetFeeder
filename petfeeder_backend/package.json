@@ -7,13 +7,16 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "migrate:sqlite": "node scripts/migrate-sqlite-to-postgres.mjs",
     "test": "node --test test/active-cases.test.mjs test/main-mqtt.test.mjs test/sync-regression.test.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "mqtt": "^5.5.2"
+    "mqtt": "^5.5.2",
+    "pg": "^8.23.1",
+    "ws": "^8.22.1"
   },
   "engines": {
     "node": ">=22.13"

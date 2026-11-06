@@ -2,7 +2,7 @@ export const defaults = Object.freeze({
   max_portion_g: 100, daily_limit_g: 200, min_interval_s: 180,
   command_ttl_s: 60,
   feed_timeout_s: 30, tolerance_g: 2, timezone_offset_min: 420,
-  bowl_capacity_g: 150, max_daily_feeds: 6, max_feed_pulses: 15,
+  bowl_capacity_g: 150, max_daily_feeds: 6,
   coarse_fine_threshold_g: 10,
   pulse_step_angle: 90, pulse_step_ms: 600,
 });
@@ -26,7 +26,7 @@ export function config(input) {
   const bounds = {max_portion_g:[1,500],daily_limit_g:[1,2000],min_interval_s:[1,86400],
     command_ttl_s:[5,300],
     feed_timeout_s:[5,120],tolerance_g:[0.1,10],timezone_offset_min:[-720,840],
-    bowl_capacity_g:[1,5000],max_daily_feeds:[1,100],max_feed_pulses:[1,100],
+    bowl_capacity_g:[1,5000],max_daily_feeds:[1,100],
     coarse_fine_threshold_g:[1,100],
     pulse_step_angle:[1,180],pulse_step_ms:[100,2000]};
   for (const [k,v] of Object.entries(input)) {

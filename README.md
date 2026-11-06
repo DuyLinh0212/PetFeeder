@@ -26,8 +26,6 @@ Lệnh từ app giữ nguyên mã và nội dung khi cần truy vấn lại kế
 
 Mạch dùng servo GPIO 13, nút GPIO 4, HX711 DT/SCK GPIO 19/23, OLED SDA/SCL GPIO 21/22, LED GPIO 2/15 và còi GPIO 14. Nút mạch gửi yêu cầu 20 g qua cùng bộ điều khiển an toàn. Bộ lọc HX711 lấy trung bình trượt 5 mẫu và chờ số cân ổn định trước khi tiếp tục cấp.
 
-PIR GPIO 27 (hoặc VL53L1X trên phần cứng thật) báo vật thể tiếp cận. Đèn soi GPIO 26 chỉ bật khi có tiếp cận và LDR GPIO 34 báo trời tối. Tín hiệu này chỉ điều khiển đèn; nó không xác nhận thú cưng và không chặn cấp thức ăn. Xem [hướng dẫn đèn báo tiếp cận](PetFeeder/APPROACH_LIGHT.md).
-
 `DEMO_AUTO` mô phỏng khối lượng HX711 tăng theo nhịp servo; đây không phải số đo thật. Gõ `sim manual` để thay đổi cân bằng tay trong Wokwi. Tải HX711 là khối lượng tổng trong bát; khẩu phần là lượng cấp thêm.
 
 Thiết bị thật dùng `pio run -e esp32dev-hardware`; Wokwi dùng `pio run -e esp32dev`. Hiệu chuẩn cân bằng `tare EMPTY`; firmware không tự tare lúc khởi động.

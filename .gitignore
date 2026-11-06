@@ -37,6 +37,8 @@ petfeeder_app/design/UI_REVIEW.md
 **/.env
 **/.env.*
 !**/.env.example
+Key.txt
+**/Key.txt
 PetFeeder/include/secrets.h
 work/
 **/local.properties

@@ -2,9 +2,10 @@
 // ESP32, portion servo, HX711, OLED, button, LEDs and buzzer.
 #include <Arduino.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <esp_partition.h>
 #if WOKWI_SIM
 #include <esp_littlefs.h>
@@ -16,9 +17,6 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#if !WOKWI_SIM
-#include <Adafruit_VL53L1X.h>
-#endif
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
@@ -29,35 +27,21 @@ constexpr int SERVO_PIN=13, BUTTON_PIN=4, DT_PIN=19, SCK_PIN=23;
 constexpr int TRIG_PIN=5, ECHO_PIN=18;
 constexpr float TANK_HEIGHT_CM=25.0f, HOPPER_CAPACITY_G=500.0f;
 constexpr int GREEN_PIN=2, RED_PIN=15, BUZZER_PIN=14;
-constexpr int APPROACH_LIGHT_PIN=26, APPROACH_PIR_PIN=27, AMBIENT_LIGHT_DO_PIN=34;
-constexpr uint16_t APPROACH_ENTER_MM=1200, APPROACH_EXIT_MM=1450;
-constexpr unsigned long APPROACH_HOLD_MS=5000;
-constexpr unsigned long AMBIENT_LIGHT_SAMPLE_MS=100;
-constexpr uint8_t AMBIENT_LIGHT_CONFIRM_SAMPLES=3;
-#if !WOKWI_SIM
-Adafruit_VL53L1X approachSensor;
-bool approachSensorOK=false;
-#endif
-bool approachActive=false,ambientDark=false;
-uint8_t approachNearSamples=0;
-uint8_t darkSamples=0,brightSamples=0;
-float approachDistanceCM=NAN;
-unsigned long approachUntil=0,ambientLightSampleAt=0;
 Adafruit_SSD1306 display(128,64,&Wire,-1);
 bool oledOK=false,simAuto=false;
 float pulseBaseline=0;
 unsigned long displayAt=0,buzzUntil=0;
-int pulseCount=0;
 bool finePulse=false,bowlMissing=false,weightDropped=false;
 String uiStatus="KHOI DONG";
 void toneNotice(unsigned long duration=100){digitalWrite(BUZZER_PIN,HIGH);buzzUntil=millis()+duration;}
 void servoAngle(int angle){ledcWrite(0,(uint32_t)((500+angle*2000/180)*65535UL/20000));}
 constexpr size_t MAX_EVENTS=96, MAX_HISTORY=32;
 WiFiClient wifiClient;
-PubSubClient mqtt(wifiClient);
+MQTTClient mqtt(4096);
 HX711 scale;
+Preferences nvs;
 JsonDocument state;
-bool storageOK=false,weightOK=false,busy=false,motorOpen=false;
+bool storageOK=false,nvsReady=false,legacyFsReady=false,weightOK=false,busy=false,motorOpen=false;
 constexpr size_t WEIGHT_FILTER_SAMPLES=5,WEIGHT_STABILITY_SAMPLES=3;
 float weightG=0,lastSample=0,weightSum=0;
 float weightSamples[WEIGHT_FILTER_SAMPLES]={0};
@@ -65,6 +49,7 @@ size_t weightSampleCount=0,weightSampleIndex=0;
 float weightWindow[WEIGHT_STABILITY_SAMPLES]={0};
 size_t weightWindowCount=0,weightWindowIndex=0;
 unsigned long lastWeightAt=0;
+bool weightStartupReported=false,weightDeviationReported=false;
 unsigned long sampleAt=0,stableAt=0,beatAt=0,publishAt=0,connectAt=0,scanAt=0,hopperAt=0;
 unsigned long feedAt=0,servoAt=0;
 unsigned long scanSavedAt=0;
@@ -79,7 +64,7 @@ long nowSec(){return (long)time(nullptr);}
 void servo(bool open){motorOpen=open;servoAngle(open?(finePulse?60:state["config"]["pulse_step_angle"].as<int>()):0);}
 void updatePanel(){
   digitalWrite(GREEN_PIN,busy);
-  digitalWrite(RED_PIN,!storageOK||state["locked"].as<bool>()||uiStatus=="SENSOR_ERROR"||uiStatus=="BOWL_MISSING");
+  digitalWrite(RED_PIN,!storageOK||state["locked"].as<bool>()||state["overflow_count"].as<unsigned long>()>0||uiStatus=="SENSOR_ERROR"||uiStatus=="BOWL_MISSING");
   if(buzzUntil&&(long)(millis()-buzzUntil)>=0){digitalWrite(BUZZER_PIN,LOW);buzzUntil=0;}
   if(!oledOK||millis()-displayAt<500)return;displayAt=millis();
   display.clearDisplay();display.setTextColor(SSD1306_WHITE);display.setTextSize(1);display.setCursor(0,0);
@@ -91,58 +76,20 @@ void updatePanel(){
   display.print("MQTT: ");display.println(mqtt.connected()?"ON":"OFF");
   display.print(simAuto?"DEMO AUTO":"HX711 MANUAL");display.display();
 }
-void updateApproachLight(){digitalWrite(APPROACH_LIGHT_PIN,approachActive&&ambientDark?HIGH:LOW);}
-void updateAmbientLight(unsigned long ms){
-  if(ms-ambientLightSampleAt<AMBIENT_LIGHT_SAMPLE_MS)return;
-  ambientLightSampleAt=ms;
-  if(digitalRead(AMBIENT_LIGHT_DO_PIN)==HIGH){
-    brightSamples=0;
-    if(darkSamples<AMBIENT_LIGHT_CONFIRM_SAMPLES)darkSamples++;
-    if(!ambientDark&&darkSamples>=AMBIENT_LIGHT_CONFIRM_SAMPLES){ambientDark=true;updateApproachLight();}
-  }else{
-    darkSamples=0;
-    if(brightSamples<AMBIENT_LIGHT_CONFIRM_SAMPLES)brightSamples++;
-    if(ambientDark&&brightSamples>=AMBIENT_LIGHT_CONFIRM_SAMPLES){ambientDark=false;updateApproachLight();}
-  }
-}
-void updateApproachSensor(unsigned long ms){
-#if WOKWI_SIM
-  if(digitalRead(APPROACH_PIR_PIN)==HIGH){approachUntil=ms+APPROACH_HOLD_MS;}
-#else
-  if(approachSensorOK&&approachSensor.dataReady()){
-    const int16_t distance=approachSensor.distance();
-    approachSensor.clearInterrupt();
-    if(distance>0){
-      approachDistanceCM=distance/10.0f;
-      if(distance<=APPROACH_ENTER_MM){
-        if(approachNearSamples<2)approachNearSamples++;
-        if(approachNearSamples>=2)approachUntil=ms+APPROACH_HOLD_MS;
-      }else if(distance>=APPROACH_EXIT_MM){approachNearSamples=0;}
-    }
-  }
-#endif
-  const bool detected=approachUntil!=0&&(long)(ms-approachUntil)<0;
-  if(detected!=approachActive){
-    approachActive=detected;
-    updateApproachLight();
-    syncTelemetryPending=true;
-  }
-}
-
 bool persist(){
-  if(!storageOK)return false;
-  File f=LittleFS.open("/state.tmp","w");
-  if(!f)return storageOK=false;
-  const size_t expected=measureJson(state),written=serializeJson(state,f);
-  f.flush();f.close();
-  if(written!=expected || !LittleFS.rename("/state.tmp","/state.json")){
-    servo(false);storageOK=false;Serial.println("LỖI: Không lưu được trạng thái; đã khóa cơ cấu cấp để bảo vệ.");return false;
+  if(!storageOK||!nvsReady)return false;
+  String serialized;serializeJson(state,serialized);
+  if(!serialized.length()||nvs.putString("state",serialized.c_str())==0){
+    servo(false);storageOK=false;Serial.println("LỖI NVS: Không lưu được trạng thái; đã khóa cơ cấu cấp để bảo vệ.");return false;
+  }
+  String readback=nvs.getString("state","");JsonDocument check;
+  if(readback!=serialized||deserializeJson(check,readback)){
+    servo(false);storageOK=false;Serial.println("LỖI NVS: Đọc kiểm tra dữ liệu không khớp; đã khóa cơ cấu cấp.");return false;
   }
   return true;
 }
 bool stateFileExists(){
-  struct stat fileInfo{};
-  return stat("/littlefs/state.json",&fileInfo)==0&&S_ISREG(fileInfo.st_mode);
+  return legacyFsReady&&LittleFS.exists("/state.json");
 }
 #if WOKWI_SIM
 bool blankSimulationStorage(){
@@ -179,6 +126,7 @@ void trackWeight(float sample,unsigned long ms){
   const bool ready=weightFilterReady();
   weightDropped=busy&&ready&&filtered-lastSample < -2;
   lastSample=filtered;
+  float windowSpan=0;
   if(!ready){weightWindowCount=0;weightWindowIndex=0;stableAt=ms;}
   else{
     weightWindow[weightWindowIndex]=filtered;
@@ -186,8 +134,24 @@ void trackWeight(float sample,unsigned long ms){
     if(weightWindowCount<WEIGHT_STABILITY_SAMPLES)weightWindowCount++;
     float lo=filtered,hi=filtered;
     for(size_t i=0;i<weightWindowCount;i++){lo=min(lo,weightWindow[i]);hi=max(hi,weightWindow[i]);}
-    if(weightWindowCount<WEIGHT_STABILITY_SAMPLES||hi-lo>cf("tolerance_g"))stableAt=ms;
+    windowSpan=hi-lo;
+    if(weightWindowCount<WEIGHT_STABILITY_SAMPLES||windowSpan>cf("tolerance_g"))stableAt=ms;
   }
+#if WOKWI_SIM
+  if(!simAuto&&ready&&weightWindowCount>=WEIGHT_STABILITY_SAMPLES){
+    const float tolerance=cf("tolerance_g");
+    if(!weightStartupReported&&windowSpan<=tolerance&&ms-stableAt>=700){
+      Serial.printf("[HX711] Cân ổn định lúc khởi động: mẫu %.1f g | MA5 %.1f g\n",sample,filtered);
+      weightStartupReported=true;
+    }else if(weightStartupReported&&windowSpan>tolerance&&!weightDeviationReported){
+      Serial.printf("[HX711] CẢNH BÁO CÂN DAO ĐỘNG: biên độ MA5 %.1f g, ngưỡng %.1f g | mẫu %.1f g | MA5 %.1f g\n",windowSpan,tolerance,sample,filtered);
+      weightDeviationReported=true;
+    }else if(weightDeviationReported&&windowSpan<=tolerance&&ms-stableAt>=700){
+      Serial.printf("[HX711] Cân ổn định trở lại | MA5 %.1f g\n",filtered);
+      weightDeviationReported=false;
+    }
+  }
+#endif
   lastWeightAt=ms;
 }
 String id(){char b[17];snprintf(b,sizeof(b),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());return String(b);}
@@ -196,12 +160,12 @@ void defaults(){
   c["max_portion_g"]=100;c["daily_limit_g"]=200;c["min_interval_s"]=180;
   c["command_ttl_s"]=60;
   c["feed_timeout_s"]=30;c["tolerance_g"]=2;c["timezone_offset_min"]=420;
-  c["bowl_capacity_g"]=150;c["max_daily_feeds"]=6;c["max_feed_pulses"]=15;
   c["coarse_fine_threshold_g"]=10;
   c["pulse_step_angle"]=90;c["pulse_step_ms"]=600;
   state["events"].to<JsonArray>();state["history"].to<JsonArray>();state["schedules"].to<JsonArray>();
   state["runs"].to<JsonArray>();
   state["seq"]=0;state["last_end"]=0;state["last_scan"]=0;state["locked"]=false;
+  state["overflow_count"]=0;state["overflow_reported_count"]=0;
   state["used_g"]=0;state["feed_count"]=0;state["day"]="";state["sim_bowl_g"]=0;state["sim_hopper_g"]=260;state["sim_auto"]=true;
 #if WOKWI_SIM
   state["calibrated"]=true;state["offset"]=0;state["factor"]=0.42; // Wokwi 5kg: 2100 raw / 5000g
@@ -258,6 +222,7 @@ const char* errorVi(const char* code){
   if(!strcmp(code,"INVALID_FIELD"))return "Dữ liệu lệnh không hợp lệ";
   if(!strcmp(code,"INVALID_CONFIG_OR_SCHEDULE"))return "Cấu hình hoặc lịch ăn không hợp lệ";
   if(!strcmp(code,"CONFIG_BUSY"))return "Không thể đổi cấu hình khi thiết bị đang cấp thức ăn";
+  if(!strcmp(code,"OUTBOX_FULL"))return "Hàng đợi đồng bộ đang đầy; lịch và nút vật lý vẫn hoạt động";
   if(!strcmp(code,"DAILY_RESERVATION_RETAINED"))return "Hạn mức ngày vẫn được giữ để bảo vệ";
   if(!strcmp(code,"WEIGHT_UNSTABLE"))return "Cân chưa ổn định trong thời hạn cho phép";
   if(!strcmp(code,"MEASUREMENT_LOST"))return "Mất số đo cân trong phiên cấp";
@@ -276,8 +241,15 @@ void printEventVi(const char* status,JsonVariantConst command,const char* error)
 }
 bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantConst actual=JsonVariantConst(),const char* error=nullptr){
   if(strcmp(status,"ACCEPTED")&&strcmp(status,"DISPENSING"))uiStatus=error?error:status;
-  if(state["events"].size()>=MAX_EVENTS){servo(false);state["locked"]=true;persist();return false;}
+  if(state["events"].size()>=MAX_EVENTS){
+    const bool firstOverflow=state["overflow_count"].as<unsigned long>()==0;
+    state["overflow_count"]=state["overflow_count"].as<unsigned long>()+1;
+    state["last_overflow_at"]=validTime()?nowSec():0;
+    uiStatus="OUTBOX_FULL";if(firstOverflow)toneNotice(300);
+    persist();return false;
+  }
   JsonObject e=state["events"].as<JsonArray>().add<JsonObject>();
+  e["v"]=1;e["device_id"]=DEVICE_ID;e["boot_id"]=bootId;
   e["event_id"]=String(DEVICE_ID)+":"+id();e["seq"]=state["seq"].as<unsigned long>()+1;state["seq"]=e["seq"];
   e["occurred_at"]=validTime()?nowSec():0;e["status"]=status;
   if(numeric(c["delta_g"],-5000,5000))e["delta_g"]=c["delta_g"];
@@ -291,6 +263,16 @@ bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantCo
   if(error)e["error_code"]=error;
   // The wire event stays JSON for MQTT; Serial Monitor is for people and uses Vietnamese.
   printEventVi(status,c,error);
+  return persist();
+}
+bool emitOverflowNotice(){
+  const unsigned long lost=state["overflow_count"].as<unsigned long>();
+  if(lost<=state["overflow_reported_count"].as<unsigned long>()||state["events"].size()>=MAX_EVENTS)return false;
+  JsonObject e=state["events"].as<JsonArray>().add<JsonObject>();
+  e["v"]=1;e["device_id"]=DEVICE_ID;e["boot_id"]=bootId;
+  e["event_id"]=String(DEVICE_ID)+":"+id();e["seq"]=state["seq"].as<unsigned long>()+1;state["seq"]=e["seq"];
+  e["occurred_at"]=validTime()?nowSec():0;e["status"]="OUTBOX_OVERFLOW";e["overflow_count"]=lost;
+  state["overflow_reported_count"]=lost;uiStatus="OUTBOX_FULL";
   return persist();
 }
 void event(const char* status,const char* error=nullptr){emit(status,JsonVariantConst(),JsonVariantConst(),error);}
@@ -351,7 +333,8 @@ void receive(JsonVariantConst c){
     for(JsonObject old:state["history"].as<JsonArray>())if(old["command"]["expires_at"].as<long>()<=now){space=true;break;}
     if(!space){event("REJECTED","HISTORY_FULL");return;}
   }
-  if(state["locked"].as<bool>()||state["events"].size()>MAX_EVENTS-6){reject(c,"RECONCILIATION_REQUIRED");return;}
+  if(state["locked"].as<bool>()){reject(c,"RECONCILIATION_REQUIRED");return;}
+  if(c["source"]=="APP"&&state["events"].size()>MAX_EVENTS-6){reject(c,"OUTBOX_FULL");return;}
   if(busy){reject(c,"BUSY");return;}
   if(!state["calibrated"].as<bool>()||!weightOK||!weightFilterReady()||millis()-stableAt<700){reject(c,bowlMissing?"BOWL_MISSING":"SENSOR_ERROR");return;}
   if(now-state["last_end"].as<long>()<cf("min_interval_s")){reject(c,"COOLDOWN");return;}
@@ -365,18 +348,20 @@ void receive(JsonVariantConst c){
   state["used_g"]=state["used_g"].as<float>()+target;
   state["feed_count"]=state["feed_count"].as<int>()+1;
   remember(c,"DISPENSING",0);
-  if(!storageOK)return;busy=true;feedAt=millis();servoAt=millis();pulseBaseline=weightG;pulseCount=1;finePulse=target<=cf("coarse_fine_threshold_g");uiStatus="DANG CAP";servo(true);toneNotice();
+  if(!storageOK)return;busy=true;feedAt=millis();servoAt=millis();pulseBaseline=weightG;finePulse=target<=cf("coarse_fine_threshold_g");uiStatus="DANG CAP";servo(true);toneNotice();
   JsonDocument zero;zero.set(0);emit("ACCEPTED",c,zero.as<JsonVariantConst>());emit("DISPENSING",c,zero.as<JsonVariantConst>());
 }
 bool configValid(JsonVariantConst c){
-  if(!c.is<JsonObjectConst>()||c.size()!=13)return false;
+  const bool legacyPulseLimit=!c["max_feed_pulses"].isNull();
+  if(!c.is<JsonObjectConst>()||(c.size()!=12&&!(c.size()==13&&legacyPulseLimit)))return false;
   struct Bound{const char* key;float lo,hi;};
   Bound bs[]={{"max_portion_g",1,500},{"daily_limit_g",1,2000},{"min_interval_s",1,86400},{"command_ttl_s",5,300},
     {"feed_timeout_s",5,120},{"tolerance_g",0.1,10},{"timezone_offset_min",-720,840},
-    {"bowl_capacity_g",1,5000},{"max_daily_feeds",1,100},{"max_feed_pulses",1,100},
+    {"bowl_capacity_g",1,5000},{"max_daily_feeds",1,100},
     {"coarse_fine_threshold_g",1,100},
     {"pulse_step_angle",1,180},{"pulse_step_ms",100,2000}};
   for(auto b:bs)if(!numeric(c[b.key],b.lo,b.hi,strcmp(b.key,"tolerance_g")!=0))return false;
+  if(legacyPulseLimit&&!numeric(c["max_feed_pulses"],1,100,true))return false;
   return c["max_portion_g"].as<float>()<=c["daily_limit_g"].as<float>()&&c["tolerance_g"].as<float>()<c["max_portion_g"].as<float>();
 }
 bool scheduleValid(JsonVariantConst items,float maxPortion){
@@ -394,7 +379,10 @@ void callback(char* topic,byte* payload,unsigned int length){
   JsonDocument d;if(deserializeJson(d,payload,length)){event("REJECTED","INVALID_JSON");return;}
   String t(topic);
   if(t==root+"/ack"){
-    if(state["events"].size()&&state["events"][0]["event_id"]==d["event_id"]){state["events"].as<JsonArray>().remove(0);persist();}return;
+    if(state["events"].size()&&state["events"][0]["event_id"]==d["event_id"]){
+      state["events"].as<JsonArray>().remove(0);
+      if(persist())emitOverflowNotice();
+    }return;
   }
   if(t==root+"/command"){receive(d.as<JsonVariantConst>());return;}
   if(t==root+"/sync"){
@@ -427,6 +415,10 @@ void callback(char* topic,byte* payload,unsigned int length){
     if(persist()){event("CONFIG_APPLIED");syncTelemetryPending=true;}
   }
 }
+void mqttCallback(MQTTClient*,char topic[],char payload[],int length){
+  if(length<0)return;
+  callback(topic,reinterpret_cast<byte*>(payload),static_cast<unsigned int>(length));
+}
 void scanSchedules(){
   if(!validTime()||busy||!storageOK)return;
   long now=nowSec(),since=state["last_scan"].as<long>();if(!since)since=now-60;if(now<since)return;
@@ -453,8 +445,6 @@ void scanSchedules(){
 }
 void heartbeat(){
   JsonDocument h;h["device_id"]=DEVICE_ID;h["status"]=busy?"DANG CHO AN...":uiStatus;
-  h["approach_detected"]=approachActive;
-  if(isfinite(approachDistanceCM))h["approach_distance_cm"]=approachDistanceCM;else h["approach_distance_cm"]=nullptr;
   if(weightOK)h["bowl_weight_g"]=weightG;else h["bowl_weight_g"]=nullptr;
   if(isfinite(distanceCM)){
     h["distance_cm"]=distanceCM;
@@ -463,16 +453,17 @@ void heartbeat(){
   h["sensor_mode"]=simAuto?"DEMO_AUTO":"HX711_MANUAL";h["ip"]=WiFi.localIP().toString();h["rssi"]=WiFi.RSSI();h["occurred_at"]=validTime()?nowSec():0;h["busy"]=busy;h["time_valid"]=validTime();
   if(weightOK)h["weight_g"]=weightG;else h["weight_g"]=nullptr;
   h["locked"]=state["locked"].as<bool>()||!storageOK;
-  h["outbox"]=state["events"].size();h["mode"]="ESP32";h["boot_id"]=bootId;h["config_version"]=state["config_version"];
+  h["outbox"]=state["events"].size();h["outbox_overflow_count"]=state["overflow_count"];
+  h["mode"]="ESP32";h["boot_id"]=bootId;h["config_version"]=state["config_version"];
   h["daily_dispensed_g"]=state["used_g"];h["daily_feed_count"]=state["feed_count"];
-  String b;serializeJson(h,b);if(!mqtt.publish((root+"/telemetry").c_str(),b.c_str(),false))Serial.println("TELEMETRY_PUBLISH_FAILED");
+  String b;serializeJson(h,b);if(!mqtt.publish((root+"/telemetry").c_str(),b.c_str(),false,0))Serial.println("TELEMETRY_PUBLISH_FAILED");
 }
 void serialCommand(String line){
   line.trim();
 #if WOKWI_SIM
   if((line=="sim auto"||line=="sim manual")&&!busy){simAuto=line=="sim auto";state["sim_auto"]=simAuto;persist();Serial.println(simAuto?"MÔ PHỎNG HX711: cân tăng theo nhịp servo; đây không phải lượng đo thật.":"CẢM BIẾN THẬT: dùng HX711/Wokwi để thay đổi số cân.");return;}
 #endif
-  if(line=="status"){heartbeat();Serial.printf("Trạng thái: cân=%.1f g | đã cân chỉnh=%s | giờ hợp lệ=%s | đang cấp=%s | Wi-Fi=%s | MQTT=%s | mã MQTT=%d\n",weightG,state["calibrated"].as<bool>()?"có":"không",validTime()?"có":"không",busy?"có":"không",WiFi.status()==WL_CONNECTED?"đã nối":"mất kết nối",mqtt.connected()?"đã nối":"mất kết nối",mqtt.state());}
+  if(line=="status"){heartbeat();Serial.printf("Trạng thái: cân=%.1f g | đã cân chỉnh=%s | giờ hợp lệ=%s | đang cấp=%s | Wi-Fi=%s | MQTT=%s | mã MQTT=%d\n",weightG,state["calibrated"].as<bool>()?"có":"không",validTime()?"có":"không",busy?"có":"không",WiFi.status()==WL_CONNECTED?"đã nối":"mất kết nối",mqtt.connected()?"đã nối":"mất kết nối",static_cast<int>(mqtt.lastError()));}
   else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("ĐÃ CÂN CHỈNH: đã lưu mức cân khi bát rỗng.");}
   else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Hãy đặt bát rỗng rồi nhập tare EMPTY để cân chỉnh.");}}
   else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
@@ -489,35 +480,46 @@ void setup(){
   ledcSetup(0,50,16);ledcAttachPin(SERVO_PIN,0);servo(false);
   pinMode(GREEN_PIN,OUTPUT);pinMode(RED_PIN,OUTPUT);pinMode(BUZZER_PIN,OUTPUT);
   Wire.begin(21,22);oledOK=display.begin(SSD1306_SWITCHCAPVCC,0x3c);
-  pinMode(APPROACH_LIGHT_PIN,OUTPUT);digitalWrite(APPROACH_LIGHT_PIN,LOW);
-  pinMode(AMBIENT_LIGHT_DO_PIN,INPUT);
-#if WOKWI_SIM
-  pinMode(APPROACH_PIR_PIN,INPUT_PULLDOWN);
-#else
-  approachSensorOK=approachSensor.begin(VL53L1X_I2C_ADDR,&Wire,false);
-  if(approachSensorOK){approachSensor.setTimingBudget(50);approachSensorOK=approachSensor.startRanging();}
-  if(!approachSensorOK)Serial.println("CẢM BIẾN KHOẢNG CÁCH VL53L1X KHÔNG SẴN SÀNG; đèn soi tự động không hoạt động.");
-#endif
   pinMode(BUTTON_PIN,INPUT_PULLUP);pinMode(TRIG_PIN,OUTPUT);pinMode(ECHO_PIN,INPUT);scale.begin(DT_PIN,SCK_PIN);
-  // Only a fully erased Wokwi partition may be initialized automatically.
-  // Existing data and real hardware must never be formatted on a mount failure.
+  // LittleFS is mounted only to read the previous firmware's state.json.
+  // Runtime state now lives in NVS; the legacy file is kept after migration.
 #if WOKWI_SIM
   if(blankSimulationStorage()){
-    Serial.println("Wokwi: đang khởi tạo bộ nhớ mô phỏng còn trống.");
-    storageOK=esp_littlefs_format("spiffs")==ESP_OK&&LittleFS.begin(false);
-  }else
+    Serial.println("Wokwi: đang khởi tạo phân vùng LittleFS trống để đọc dữ liệu cũ.");
+    legacyFsReady=esp_littlefs_format("spiffs")==ESP_OK&&LittleFS.begin(false);
+  }else legacyFsReady=LittleFS.begin(false);
+#else
+  legacyFsReady=LittleFS.begin(false);
 #endif
-  storageOK=LittleFS.begin(false);
-  if(!storageOK){Serial.println("LỖI BỘ NHỚ: thiết bị đang khóa. Chỉ nhập INIT_NEW_DEVICE nếu đây là thiết bị mới, bộ nhớ chưa có dữ liệu.");}
-  if(storageOK&&stateFileExists()){
-    File f=LittleFS.open("/state.json","r");if(deserializeJson(state,f)){storageOK=false;Serial.println("LỖI BỘ NHỚ: dữ liệu trạng thái bị hỏng; đã khóa cơ cấu cấp.");}f.close();
-  }else if(storageOK){defaults();persist();}
+  if(!legacyFsReady)Serial.println("LittleFS cũ không đọc được; NVS vẫn được dùng nếu đã có dữ liệu.");
+  nvsReady=nvs.begin("petfeeder",false);
+  if(!nvsReady){storageOK=false;Serial.println("LỖI NVS: không mở được phân vùng lưu trạng thái; cơ cấu cấp bị khóa.");}
+  else {
+    const String saved=nvs.getString("state","");
+    if(saved.length()){
+      if(deserializeJson(state,saved)){storageOK=false;Serial.println("LỖI NVS: dữ liệu trạng thái bị hỏng; đã khóa cơ cấu cấp.");}
+      else storageOK=true;
+    }else if(stateFileExists()){
+      File f=LittleFS.open("/state.json","r");
+      if(!f||deserializeJson(state,f)){storageOK=false;Serial.println("LỖI MIGRATION: state.json bị hỏng; dữ liệu gốc được giữ nguyên và cơ cấu cấp bị khóa.");}
+      else {
+        storageOK=true;
+        if(persist())Serial.println("ĐÃ MIGRATE: trạng thái LittleFS đã được ghi và đọc kiểm tra trên NVS; state.json cũ được giữ lại.");
+      }
+      if(f)f.close();
+    }else if(legacyFsReady){
+      storageOK=true;defaults();persist();
+    }else {
+      storageOK=false;Serial.println("LỖI BỘ NHỚ: chưa có trạng thái NVS và không đọc được LittleFS. Chỉ nhập INIT_NEW_DEVICE cho thiết bị mới.");
+    }
+  }
   if(storageOK){
     // Keep the current policy while preserving calibration, schedules and totals.
     JsonObject c=cfg();bool changed=false;
-    const char* keys[]={"max_portion_g","daily_limit_g","min_interval_s","command_ttl_s","feed_timeout_s","tolerance_g","timezone_offset_min","bowl_capacity_g","max_daily_feeds","max_feed_pulses","coarse_fine_threshold_g","pulse_step_angle","pulse_step_ms"};
-    const int values[]={100,200,180,60,30,2,420,150,6,15,10,90,600};
-    for(int i=0;i<13;i++)if(c[keys[i]].isNull()){c[keys[i]]=values[i];changed=true;}
+    const char* keys[]={"max_portion_g","daily_limit_g","min_interval_s","command_ttl_s","feed_timeout_s","tolerance_g","timezone_offset_min","bowl_capacity_g","max_daily_feeds","coarse_fine_threshold_g","pulse_step_angle","pulse_step_ms"};
+    const int values[]={100,200,180,60,30,2,420,150,6,10,90,600};
+    for(int i=0;i<12;i++)if(c[keys[i]].isNull()){c[keys[i]]=values[i];changed=true;}
+    if(!c["max_feed_pulses"].isNull()){c.remove("max_feed_pulses");changed=true;}
     if(!c["require_pet"].isNull()){c.remove("require_pet");changed=true;}
     for(const char* key:{"tank_height_cm","empty_threshold_cm","observation_s","food_stale_s","food_confirmed","food_label","lockdown","anti_jam_max_retries"})if(!c[key].isNull()){c.remove(key);changed=true;}
     for(const char* key:{"observations","food_since","stale_alert"})if(!state[key].isNull()){state.remove(key);changed=true;}
@@ -530,6 +532,8 @@ void setup(){
     if(state["last_scan"].isNull()){state["last_scan"]=0;changed=true;}
     if(state["seq"].isNull()){state["seq"]=0;changed=true;}
     if(state["locked"].isNull()){state["locked"]=false;changed=true;}
+    if(state["overflow_count"].isNull()){state["overflow_count"]=0;changed=true;}
+    if(state["overflow_reported_count"].isNull()){state["overflow_reported_count"]=0;changed=true;}
     if(state["day"].isNull()||!state["day"].is<const char*>()||!state["day"].as<String>().length()){
       state["day"]=validTime()?dayKey(nowSec()):"";changed=true;
     }
@@ -553,7 +557,7 @@ void setup(){
   simAuto=storageOK&&state["sim_auto"].as<bool>();
 #endif
   busy=false;WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
-  mqtt.setServer(MQTT_HOST,MQTT_PORT);mqtt.setCallback(callback);mqtt.setBufferSize(8192);mqtt.setSocketTimeout(1);mqtt.setKeepAlive(60);
+  mqtt.begin(MQTT_HOST,MQTT_PORT,wifiClient);mqtt.onMessageAdvanced(mqttCallback);mqtt.setTimeout(1000);mqtt.setKeepAlive(60);
   Serial.printf("Đang kết nối Wi-Fi Wokwi-GUEST và MQTT %s:%d. Topic: %s | Client: %s\n",MQTT_HOST,MQTT_PORT,root.c_str(),mqttClientId.c_str());
   Serial.println("PetFeeder đã sẵn sàng. Lệnh: status | sim manual | sim auto. Cân HX711 không tự chỉnh về 0 khi khởi động.");
 }
@@ -563,7 +567,8 @@ void loop(){
       if(!serialLine.length())continue; // Accept CR, LF and CRLF without repeating a command.
       Serial.println();serialLine.trim();
       if(serialLine=="INIT_NEW_DEVICE"&&!storageOK){
-        if(LittleFS.format()&&LittleFS.begin(false)){storageOK=true;defaults();persist();
+        if(!nvsReady)nvsReady=nvs.begin("petfeeder",false);
+        if(nvsReady&&nvs.clear()){state.clear();storageOK=true;defaults();persist();
 #if WOKWI_SIM
         simAuto=true;
 #endif
@@ -574,8 +579,6 @@ void loop(){
     }else if(static_cast<uint8_t>(c)>=32&&serialLine.length()<4096){serialLine+=c;Serial.write(c);}
   }
   unsigned long ms=millis();
-  updateAmbientLight(ms);
-  updateApproachSensor(ms);
   updatePanel();
   if(!storageOK){servo(false);delay(1);return;}
   weightDropped=false;
@@ -631,10 +634,9 @@ void loop(){
       else if(ms-feedAt>=(unsigned long)(cf("feed_timeout_s")*1000))finish(actual>0?"PARTIAL":"TIMEOUT","FEED_TIMEOUT");
       else if(motorOpen){
         if(ms-servoAt>=(finePulse?200:cf("pulse_step_ms"))){servo(false);servoAt=ms;}
-      }else if(pulseCount>=cf("max_feed_pulses")&&ms-servoAt>=600)finish(actual>0?"PARTIAL":"TIMEOUT","MAX_PULSES_REACHED");
-      else if(ms-servoAt>=600){
+      }else if(ms-servoAt>=600){
         if(weightG-pulseBaseline>=1)finePulse=target-actual<=cf("coarse_fine_threshold_g");
-        pulseBaseline=weightG;pulseCount++;servoAt=ms;servo(true);
+        pulseBaseline=weightG;servoAt=ms;servo(true);
       }
     }
   }
@@ -648,8 +650,9 @@ void loop(){
     if(mqtt.connected()){
       mqtt.loop();
       if(syncTelemetryPending||ms-beatAt>=5000){syncTelemetryPending=false;beatAt=ms;heartbeat();}
-      if(ms-publishAt>=1000&&state["events"].size()){
-        publishAt=ms;String e;serializeJson(state["events"][0],e);mqtt.publish((root+"/events").c_str(),e.c_str(),false);
+      if(!busy&&ms-publishAt>=1000&&state["events"].size()){
+        publishAt=ms;String e;serializeJson(state["events"][0],e);
+        if(!mqtt.publish((root+"/events").c_str(),e.c_str(),false,1))Serial.println("EVENT_MQTT_QOS1_FAILED; giữ sự kiện trong NVS để gửi lại.");
       }
     }
   }

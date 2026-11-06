@@ -1,6 +1,6 @@
 # Các kịch bản xử lý tình huống đang có
 
-Các luồng đang giữ: **C03, N01, N02, N07, N09 và N19**. Bên dưới là cách hệ thống xử lý và cách thử từng tình huống theo mẫu bạn đưa. Nút vật lý được giữ như hiện tại và không cần xác minh thú cưng. Ba kịch bản cuối là nhánh an toàn đã có trong code, chưa có mã case riêng.
+Các luồng đang giữ: **C03, N01, N07, N09 và N19**. Bên dưới là cách hệ thống xử lý và cách thử từng tình huống theo mẫu bạn đưa. Nút vật lý vẫn hoạt động như hiện tại. Ba kịch bản cuối là nhánh an toàn đã có trong code, chưa có mã case riêng.
 
 ## Chuẩn bị Wokwi
 
@@ -10,19 +10,7 @@ Các luồng đang giữ: **C03, N01, N02, N07, N09 và N19**. Bên dưới là 
 - `sim auto` tự tăng cân để minh họa servo; số cân này là giả lập.
 - Nếu thử cấp qua app, backend và firmware cần dùng cùng MQTT topic prefix.
 
-### **Kịch bản 1: Nhấn nút vật lý để cấp thức ăn**
-
-- **Nguyên lý:** Nút trên mạch gửi lệnh cấp 20 g như trước. Lệnh không cần nhận diện thú cưng; firmware vẫn kiểm tra giờ, cân, khoảng chờ, sức chứa bát và giới hạn trong ngày.
-- **Các bước test trên Wokwi:**
-  1. Đặt bát lên cân, hiệu chuẩn bằng `tare EMPTY` và chờ số cân ổn định.
-  2. Chờ ESP32 kết nối, đồng hồ hợp lệ và không ở trong khoảng chờ.
-  3. Nhấn nút GPIO 4 một lần.
-  4. Thử lại khi thiết bị đang cấp hoặc trước khi hết khoảng chờ để kiểm tra các khóa an toàn hiện có.
-- **Kết quả:**
-  - Lệnh nút được tiếp nhận với khẩu phần 20 g và chạy servo nếu các điều kiện an toàn đều đạt.
-  - Nếu thiết bị đang bận, cân chưa ổn định, bát quá đầy hoặc chưa hết khoảng chờ, lệnh bị từ chối; nút không tạo phiên cấp thứ hai.
-
-### **Kịch bản 2: Nhấn nút hoặc gửi lệnh cấp nhiều lần (C03)**
+### **Kịch bản 1: Nhấn nút hoặc gửi lệnh cấp nhiều lần (C03)**
 
 - **Nguyên lý:** App, nút bấm và lịch dùng chung một trạng thái cấp. Lệnh khác đến khi máy đang cấp bị `BUSY`; gửi lại cùng `command_id` không tạo thêm phiên.
 - **Các bước test trên Wokwi và app:**
@@ -33,7 +21,7 @@ Các luồng đang giữ: **C03, N01, N02, N07, N09 và N19**. Bên dưới là 
   - Lệnh mới bị từ chối `BUSY`.
   - Lệnh trùng được nhận ra là `BLOCKED_DUPLICATE`; servo không cấp thêm lần nữa.
 
-### **Kịch bản 3: Bát gần đầy, khẩu phần mới sẽ làm tràn bát (N01)**
+### **Kịch bản 2: Bát gần đầy, khẩu phần mới sẽ làm tràn bát (N01)**
 
 - **Nguyên lý:** Khẩu phần là lượng thức ăn cấp thêm. Nếu cân hiện tại cộng khẩu phần vượt sức chứa bát, hệ thống từ chối trước khi mở servo.
 - **Các bước test trên Wokwi:**
@@ -45,35 +33,24 @@ Các luồng đang giữ: **C03, N01, N02, N07, N09 và N19**. Bên dưới là 
   - App/thiết bị báo `BOWL_FULL`; servo không mở.
 - **Ghi chú:** `PetFeeder/test/n01.yaml` hiện đặt cân ở 140 g và đọc trạng thái thiết bị; file này chưa tự gửi lệnh cấp để kiểm tra `BOWL_FULL`.
 
-### **Kịch bản 4: Yêu cầu cấp quá sớm hoặc vượt hạn mức trong ngày (N02)**
+### **Kịch bản 3: Thú cưng làm rung hoặc đẩy bát khi đang cấp (N07)**
 
-- **Nguyên lý:** Mặc định thiết bị chờ ít nhất 180 giây giữa hai lần cấp, giới hạn 200 g và tối đa 6 phiên mỗi ngày. Các giá trị này có thể chỉnh trong cấu hình và được lưu qua khởi động lại.
-- **Các bước test trên app/backend:**
-  1. Cấp một khẩu phần hợp lệ và đợi phiên kết thúc.
-  2. Gửi lệnh thứ hai trước khi hết 180 giây.
-  3. Để thử nhanh hạn mức ngày, giảm `min_interval_s`, rồi đặt `daily_limit_g` hoặc `max_daily_feeds` xuống thấp trong Cài đặt an toàn.
-  4. Cấp đến ngưỡng, khởi động lại thiết bị rồi thử thêm lần nữa.
-- **Kết quả:**
-  - Cấp quá sớm: `COOLDOWN`.
-  - Vượt tổng gram trong ngày: `DAILY_LIMIT`.
-  - Vượt số phiên trong ngày: `DAILY_FEED_LIMIT`.
-  - Khởi động lại không xóa phần hạn mức đã dùng.
-
-### **Kịch bản 5: Thú cưng làm rung hoặc đẩy bát khi đang cấp (N07)**
-
-- **Nguyên lý:** HX711 được đọc mỗi 100 ms. Firmware lấy trung bình trượt 5 mẫu; cân cần có 3 mẫu liên tiếp nằm trong sai số 2 g và ổn định thêm 700 ms. Cân dao động thì servo tạm dừng. Nếu số cân lọc giảm hơn 2 g giữa hai mẫu, phiên bị dừng vì không còn biết chính xác lượng đã cấp.
+- **Nguyên lý:** HX711 được đọc mỗi 100 ms. Firmware lấy trung bình trượt 5 mẫu (`MA5`); cân cần có 3 mẫu liên tiếp nằm trong sai số 2 g và ổn định thêm 700 ms. Cân dao động thì servo tạm dừng. Nếu số cân lọc giảm hơn 2 g giữa hai mẫu, phiên bị dừng vì không còn biết chính xác lượng đã cấp.
 - **Các bước test trên Wokwi:**
-  1. Chọn `sim manual`, đặt tải ở `0.040 kg` và chờ ổn định.
-  2. Gửi lệnh cấp 20 g từ app.
-  3. Khi servo đang chạy, đổi `load` lên `0.050 kg` khoảng 0,3 giây rồi trả về `0.040 kg` để mô phỏng rung nhẹ.
-  4. Chờ cân ổn định; sau đó đặt `load=0.060 kg` để mô phỏng 20 g thức ăn đã rơi xuống.
-  5. Thử nhánh rung mạnh trong phiên khác: làm cân giảm từ `0.040 kg` xuống `0.020 kg` khi servo đang chạy.
+  1. Chọn `sim manual` trong Serial Monitor.
+  2. Mở điều khiển HX711 `scale` trong Wokwi, đặt `load=0.000 kg`, rồi gõ `tare EMPTY` để lấy mức cân rỗng.
+  3. Đặt `load=0.040 kg` và chờ Serial báo `ỔN ĐỊNH`.
+  4. Gửi lệnh cấp 20 g từ app hoặc nhấn nút trên mạch.
+  5. Khi servo đang chạy, dùng điều khiển `load` đặt `0.050 kg` trong khoảng 0,3 giây rồi trả về `0.040 kg` để tạo một cú rung giả lập. Có thể lặp lại vài lần.
+  6. Sau khi rung kết thúc, đặt `load=0.060 kg` để mô phỏng 20 g thức ăn đã rơi xuống.
+  7. Thử nhánh rung mạnh trong phiên khác: làm cân giảm từ `0.040 kg` xuống `0.020 kg` khi servo đang chạy.
 - **Kết quả:**
+  - Serial in mẫu đo và `MA5`; khi đặt tải nhảy lên, `MA5` thay đổi từ từ qua các mẫu thay vì nhảy ngay theo tải.
   - Rung nhẹ: servo chờ cân ổn định rồi tiếp tục cấp.
   - Cân giảm mạnh: thiết bị dừng với `INTERRUPTED`; lượng thực cấp được để trống và thiết bị chờ kiểm tra.
 - **Lưu ý:** Hệ thống chỉ nhìn biến động HX711, chưa có cảm biến nhận ra nguyên nhân là thú đẩy bát, thú ăn hay bát bị xê dịch.
 
-### **Kịch bản 6: Bát bị nhấc khỏi cân giữa phiên cấp (N09)**
+### **Kịch bản 4: Bát bị nhấc khỏi cân giữa phiên cấp (N09)**
 
 - **Nguyên lý:** Mạch chưa có cảm biến hiện diện bát riêng. Firmware dùng dấu hiệu cân HX711 âm từ 10 g trở xuống so với mức tare để suy luận bát đã bị nhấc. Khi không còn số đo tin cậy, servo dừng và lượng cấp được ghi là chưa biết.
 - **Các bước test trên Wokwi:**
@@ -85,50 +62,42 @@ Các luồng đang giữ: **C03, N01, N02, N07, N09 và N19**. Bên dưới là 
   - Thiết bị báo `BOWL_MISSING`, đóng servo và khóa lệnh cấp mới.
   - Sau khi đặt bát lại và xác nhận kiểm tra, thiết bị mở khóa nhưng vẫn giữ phần hạn mức đã dự trữ để tránh cấp trùng.
 
-### **Kịch bản 7: Đến giờ ăn khi MQTT mất kết nối (N19)**
+### **Kịch bản 5: Mất mạng, dùng lịch offline để cấp thức ăn đúng giờ (N19)**
 
-- **Nguyên lý:** Lịch đã đồng bộ được lưu trên ESP32. Nếu đồng hồ còn hợp lệ, lịch vẫn chạy khi MQTT mất kết nối; sự kiện được giữ trong hàng đợi và gửi lại khi mạng phục hồi. Lịch trễ từ 60 giây trở lên bị bỏ qua, không cấp dồn.
-- **Các bước test bằng backend simulator hoặc Wokwi:**
-  1. Tạo lịch cho ngày hiện tại, đặt giờ chạy sắp tới và chờ ESP32 nhận lịch.
-  2. Ngắt MQTT trước giờ ăn, nhưng giữ thiết bị bật và đồng hồ hợp lệ.
-  3. Chờ qua giờ lịch, kiểm tra servo và hàng đợi sự kiện trên thiết bị.
-  4. Nối MQTT lại rồi kiểm tra backend nhận sự kiện.
-  5. Đồng bộ lại lịch hoặc khởi động lại để chắc rằng lịch hôm đó không chạy lần hai.
+- **Nguyên lý:** Đây là trường hợp chỉ mất kết nối mạng: ESP32 vẫn có điện và tiếp tục chạy. Lịch đã nhận được lưu trong NVS, nên thiết bị tự kiểm tra giờ và cấp thức ăn dù Wi-Fi, MQTT, backend hoặc app không kết nối. Sự kiện được giữ trong hàng đợi NVS để gửi lên backend khi mạng trở lại. Lịch trễ từ 60 giây trở lên bị bỏ qua, không cấp dồn.
+- **Các bước test bằng backend simulator hoặc thiết bị Wokwi/phần cứng:**
+  1. Tạo lịch cho ngày hiện tại, đặt giờ chạy sắp tới và chờ ESP32 nhận cấu hình; xác nhận có sự kiện `CONFIG_APPLIED`.
+  2. Ngắt kết nối mạng trước giờ ăn; giữ ESP32 đang bật và không nhấn reset.
+  3. Chờ đến giờ lịch. Thiết bị dùng lịch đã lưu để cấp nếu cân ổn định, bát còn chỗ và các giới hạn an toàn cho phép.
+  4. Nối mạng lại, chờ thiết bị gửi sự kiện đã lưu rồi kiểm tra lịch sử trên backend.
+  5. Xác nhận lịch sử ghi nhận đúng một phiên cấp; lịch không bị chạy lại sau khi sự kiện được đồng bộ.
 - **Kết quả:**
-  - Lịch trong cửa sổ 60 giây chạy một lần; sự kiện được gửi lại sau khi có mạng.
+  - Đến giờ, thiết bị dùng lịch NVS để cấp tự động dù app/backend không kết nối.
+  - Sự kiện được lưu offline và gửi lại sau khi có mạng; gửi lặp không tạo lịch sử trùng.
   - Lịch trễ từ 60 giây trở lên ghi `MISSED_SCHEDULE` và không cấp bù.
-  - Nếu đồng hồ chưa hợp lệ, thiết bị chờ đồng bộ giờ rồi mới xét lịch.
+  - Nếu đồng hồ chưa hợp lệ hoặc thiết bị mất nguồn trước giờ ăn, lịch không thể tự chạy cho đến khi có giờ hợp lệ và thiết bị hoạt động.
 
-## Ba tình huống an toàn khác đã có trong code
+## Hai tình huống an toàn khác đã có trong code
 
-### **Kịch bản 8: Lệnh sai dữ liệu, quá hạn hoặc thiết bị chưa có giờ**
-
-- **Nguyên lý:** Thiết bị kiểm tra trường bắt buộc, thời hạn lệnh và giờ hiện tại trước khi cấp.
-- **Các bước test:**
-  1. Gửi lệnh thiếu trường hoặc có khẩu phần sai miền giá trị.
-  2. Gửi lệnh có `expires_at` đã qua.
-  3. Thử gửi lệnh khi ESP32 chưa đồng bộ được giờ.
-- **Kết quả:** Lệnh sai báo `INVALID_FIELD`, lệnh cũ báo `COMMAND_EXPIRED`, giờ chưa hợp lệ báo `TIME_INVALID`; servo không chạy.
-
-### **Kịch bản 9: Cân báo cấp đủ, cấp thiếu, cấp quá lượng hoặc không rơi hạt**
+### **Kịch bản 6: Cân báo cấp đủ, cấp thiếu, cấp quá lượng hoặc không rơi hạt**
 
 - **Nguyên lý:** Servo cấp theo nhịp, cân đo lượng tăng thực tế rồi quyết định trạng thái phiên.
 - **Các bước test trên Wokwi:**
   1. Chọn `sim auto`, yêu cầu cấp 20 g để xem cân giả lập tăng đến mục tiêu.
   2. Chọn `sim manual` để thử riêng: tăng cân đến gần 20 g; tăng vượt 22 g; tăng một phần rồi giữ nguyên; hoặc không tăng cân.
-  3. Để cân đứng yên đến khi thiết bị chạm giới hạn nhịp hoặc thời gian.
-- **Kết quả:** Đạt mục tiêu báo `SUCCESS`; vượt mục tiêu hơn sai số báo `OVER_PORTION`; có cấp nhưng chưa đủ báo `PARTIAL`; không có thức ăn rơi xuống báo `TIMEOUT` khi hết giới hạn. Servo đóng khi phiên kết thúc.
+  3. Để cân đứng yên đến khi thiết bị chạm giới hạn thời gian cấp.
+- **Kết quả:** Đạt mục tiêu báo `SUCCESS`; vượt mục tiêu hơn sai số báo `OVER_PORTION`; có cấp nhưng chưa đủ báo `PARTIAL`; không có thức ăn rơi xuống báo `TIMEOUT` khi hết thời gian cấp. Servo đóng khi phiên kết thúc.
 - **Lưu ý:** `sim auto` chỉ tạo số cân giả lập. Độ chính xác khi hạt rơi và quán tính servo cần thử trên mạch thật.
 
-### **Kịch bản 10: Mất điện giữa phiên cấp**
+### **Kịch bản 7: Mất điện giữa phiên cấp đang chạy**
 
-- **Nguyên lý:** Khi khởi động lại, nếu bộ nhớ ghi nhận còn phiên cấp dang dở, ESP32 đóng servo, đánh dấu gián đoạn và khóa cấp để chờ kiểm tra. Thiết bị không tự chạy lại khẩu phần cũ.
+- **Nguyên lý:** Khác với kịch bản 5, ở đây ESP32 bị mất nguồn trong lúc servo đang cấp. Lúc không có điện, thiết bị chưa thể ghi sự kiện mới; trạng thái phiên `active` đã được lưu trước đó trong NVS. Khi khởi động lại, firmware phát hiện phiên dang dở, ghi `INTERRUPTED` vào lịch sử và thêm sự kiện vào hàng đợi NVS để gửi backend sau khi có mạng. Thiết bị khóa cấp để chờ kiểm tra; phần khẩu phần còn thiếu không được tự xếp hàng để cấp tiếp.
 - **Các bước test trên Wokwi:**
-  1. Chọn `sim manual`, bắt đầu cấp và chờ trạng thái `DISPENSING`.
-  2. Khởi động lại ESP32 trước khi cân đạt mục tiêu.
-  3. Kiểm tra trạng thái sau khi thiết bị khởi động.
-  4. Kiểm tra bát và cơ cấu; đặt cân về số đo hợp lệ rồi gõ `reconcile CHECKED`.
-- **Kết quả:** Phiên cũ ghi `INTERRUPTED` kèm `RECONCILIATION_REQUIRED`; thiết bị không cấp lại cho đến khi được kiểm tra và xác nhận.
+  1. Chọn `sim manual`, bắt đầu một phiên cấp và chờ trạng thái `DISPENSING`.
+  2. Khi vẫn thấy `DISPENSING`, bấm nút reset màu xanh trên thanh Wokwi. Reset này mô phỏng ESP32 khởi động lại và giữ vùng flash/NVS; đây là cách thử luồng phục hồi, không phải cắt nguồn vật lý thật.
+  3. Sau khi boot xong, kiểm tra phiên cũ được ghi `INTERRUPTED` kèm `RECONCILIATION_REQUIRED`, sự kiện nằm trong outbox NVS và servo không tự mở lại.
+  4. Kiểm tra lượng thức ăn trong bát và cơ cấu; đặt cân về số đo hợp lệ rồi gõ `reconcile CHECKED`.
+- **Kết quả:** Nếu mạng chưa có và outbox còn chỗ, sự kiện `INTERRUPTED` vẫn nằm trong hàng đợi; khi kết nối lại, ESP32 gửi sự kiện và xóa khỏi hàng đợi sau ACK. Nếu outbox đầy, firmware không ghi đè sự kiện cũ mà tăng bộ đếm tràn. Thiết bị chỉ nhận phiên cấp mới sau khi người dùng kiểm tra và xác nhận; không tự cấp phần còn thiếu của phiên trước.
 
 ## Những việc hệ thống chưa tự xử lý
 

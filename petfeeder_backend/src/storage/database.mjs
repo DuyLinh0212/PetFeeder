@@ -9,7 +9,19 @@ export class Storage {
   }
   get(bucket,id='state') { const row=this.db.prepare('SELECT body FROM docs WHERE bucket=? AND id=?').get(bucket,id); return row ? JSON.parse(row.body):null; }
   put(bucket,id,body) { this.db.prepare('INSERT INTO docs VALUES(?,?,?) ON CONFLICT(bucket,id) DO UPDATE SET body=excluded.body').run(bucket,id,JSON.stringify(body)); return body; }
+  putIfAbsent(bucket,id,body) {
+    const result=this.db.prepare('INSERT OR IGNORE INTO docs VALUES(?,?,?)').run(bucket,id,JSON.stringify(body));
+    return result.changes===1;
+  }
   all(bucket) { return this.db.prepare('SELECT body FROM docs WHERE bucket=? ORDER BY rowid DESC').all(bucket).map(r=>JSON.parse(r.body)); }
-  transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try {const r=fn();this.db.exec('COMMIT');return r;}catch(e){this.db.exec('ROLLBACK');throw e;} }
+  transaction(fn) {
+    this.db.exec('BEGIN IMMEDIATE');
+    const commit=value=>{this.db.exec('COMMIT');return value;};
+    const rollback=error=>{try{this.db.exec('ROLLBACK');}catch{}throw error;};
+    try {
+      const result=fn();
+      return result&&typeof result.then==='function'?result.then(commit,rollback):commit(result);
+    } catch(error) { return rollback(error); }
+  }
   close(){this.db.close();}
 }

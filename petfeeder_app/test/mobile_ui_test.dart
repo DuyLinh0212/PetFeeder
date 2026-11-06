@@ -78,7 +78,6 @@ class FakeBackend {
         'feed_timeout_s': 30,
         'max_daily_feeds': 6,
         'bowl_capacity_g': 150,
-        'max_feed_pulses': 15,
         'tolerance_g': 3.0,
         'timezone_offset_min': 420,
       });

@@ -5,10 +5,10 @@ class DeviceStatus {
   final double? bowlWeightG;
   final int? foodLevelPercent;
   final double? distanceCm;
-  final bool approachDetected;
-  final double? approachDistanceCm;
   final String ipAddress;
   final int wifiRssi;
+  final int pendingEvents;
+  final int outboxOverflowCount;
   final String? lastSeen;
   final bool mqttConnected;
   final int minIntervalSec;
@@ -29,10 +29,10 @@ class DeviceStatus {
     required this.bowlWeightG,
     this.foodLevelPercent,
     this.distanceCm,
-    this.approachDetected = false,
-    this.approachDistanceCm,
     required this.ipAddress,
     required this.wifiRssi,
+    required this.pendingEvents,
+    required this.outboxOverflowCount,
     required this.lastSeen,
     required this.mqttConnected,
     required this.minIntervalSec,
@@ -58,10 +58,10 @@ class DeviceStatus {
       bowlWeightG: (json['bowl_weight_g'] as num?)?.toDouble(),
       foodLevelPercent: (json['food_level_percent'] as num?)?.toInt(),
       distanceCm: (json['distance_cm'] as num?)?.toDouble(),
-      approachDetected: json['approach_detected'] == true,
-      approachDistanceCm: (json['approach_distance_cm'] as num?)?.toDouble(),
       ipAddress: json['ip_address'] as String? ?? '',
       wifiRssi: (json['wifi_rssi'] as num?)?.toInt() ?? 0,
+      pendingEvents: (json['pending_events'] as num?)?.toInt() ?? 0,
+      outboxOverflowCount: (json['outbox_overflow_count'] as num?)?.toInt() ?? 0,
       lastSeen: json['last_seen'] as String?,
       mqttConnected: json['mqtt_connected'] == true,
       minIntervalSec: (json['min_interval_s'] as num?)?.toInt() ?? 180,

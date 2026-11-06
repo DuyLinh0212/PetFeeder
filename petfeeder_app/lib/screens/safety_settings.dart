@@ -17,7 +17,6 @@ class _SafetySettingsState extends State<SafetySettings> {
     'daily_limit_g': 'Tổng lượng tối đa mỗi ngày (g)',
     'max_daily_feeds': 'Số lần cấp tối đa mỗi ngày',
     'bowl_capacity_g': 'Sức chứa tối đa của bát (g)',
-    'max_feed_pulses': 'Số nhịp servo tối đa mỗi phiên',
     'min_interval_s': 'Khoảng chờ giữa các phiên (giây)',
     'feed_timeout_s': 'Thời gian cấp tối đa (giây)',
     'tolerance_g': 'Sai số cân (g)',
