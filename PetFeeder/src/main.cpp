@@ -57,7 +57,8 @@ String serialLine;
 String bootId;
 String root=MQTT_TOPIC_PREFIX;
 String mqttClientId;
-bool clockSyncReported=false,syncTelemetryPending=false;
+bool clockSyncReported=false,syncTelemetryPending=false,recoveryPending=false;
+unsigned long recoveryPendingSince=0;
 float distanceCM=NAN;
 bool validTime(){return time(nullptr)>1700000000;}
 long nowSec(){return (long)time(nullptr);}
@@ -226,6 +227,9 @@ const char* errorVi(const char* code){
   if(!strcmp(code,"DAILY_RESERVATION_RETAINED"))return "Hạn mức ngày vẫn được giữ để bảo vệ";
   if(!strcmp(code,"WEIGHT_UNSTABLE"))return "Cân chưa ổn định trong thời hạn cho phép";
   if(!strcmp(code,"MEASUREMENT_LOST"))return "Mất số đo cân trong phiên cấp";
+  if(!strcmp(code,"POWER_RESTORED_AUTO_RESUME"))return "Có điện lại trong 1 giờ; tiếp tục phần còn thiếu";
+  if(!strcmp(code,"POWER_OUTAGE_RETRY_REQUIRED"))return "Mất điện quá 1 giờ; mở ứng dụng để xác nhận cấp lại";
+  if(!strcmp(code,"RECOVERY_SCALE_UNSTABLE"))return "Cân chưa ổn định sau khi khởi động; cần kiểm tra thủ công";
   if(!strcmp(code,"FEED_TIMEOUT"))return "Đã hết thời gian cấp tối đa";
   if(!strcmp(code,"MAX_PULSES_REACHED"))return "Đã đạt số nhịp cấp tối đa";
   return "Xem mã lỗi để biết chi tiết";
@@ -251,7 +255,10 @@ bool emit(const char* status,JsonVariantConst c=JsonVariantConst(),JsonVariantCo
   JsonObject e=state["events"].as<JsonArray>().add<JsonObject>();
   e["v"]=1;e["device_id"]=DEVICE_ID;e["boot_id"]=bootId;
   e["event_id"]=String(DEVICE_ID)+":"+id();e["seq"]=state["seq"].as<unsigned long>()+1;state["seq"]=e["seq"];
-  e["occurred_at"]=validTime()?nowSec():0;e["status"]=status;
+  long occurredAt=validTime()?nowSec():0;
+  if(!strcmp(status,"INTERRUPTED")&&error&&!strcmp(error,"POWER_OUTAGE_RETRY_REQUIRED")&&
+     numeric(c["started_at"],1700000000,4102444800.0,true))occurredAt=c["started_at"].as<long>();
+  e["occurred_at"]=occurredAt;e["status"]=status;
   if(numeric(c["delta_g"],-5000,5000))e["delta_g"]=c["delta_g"];
   if(numeric(c["current_bowl_weight_g"],0,5000))e["current_bowl_weight_g"]=c["current_bowl_weight_g"];
   if(!c.isNull() && c["command_id"].is<const char*>()){
@@ -394,10 +401,19 @@ void callback(char* topic,byte* payload,unsigned int length){
       if(!clockWasValid||labs(nowSec()-serverTime)>2){
         timeval corrected{};corrected.tv_sec=serverTime;
         if(settimeofday(&corrected,nullptr)==0){
+          if(recoveryPending&&state["sim_outage_s"].isNull()&&
+             numeric(d["previous_device_seen_at"],1700000000,4102444800.0,true)){
+            const long elapsed=serverTime-d["previous_device_seen_at"].as<long>();
+            if(elapsed>=0&&elapsed<=30L*86400){state["recovery_elapsed_s"]=elapsed;persist();}
+          }
           // Clock maintenance is independent of config and must not fill the durable outbox.
           if(!clockSyncReported||!clockWasValid){event("CLOCK_SYNCED");clockSyncReported=true;}
           syncTelemetryPending=true;
         }
+      }else if(recoveryPending&&state["sim_outage_s"].isNull()&&state["recovery_elapsed_s"].isNull()&&
+               numeric(d["previous_device_seen_at"],1700000000,4102444800.0,true)){
+        const long elapsed=serverTime-d["previous_device_seen_at"].as<long>();
+        if(elapsed>=0&&elapsed<=30L*86400){state["recovery_elapsed_s"]=elapsed;persist();}
       }
     }
     if(!ident(d["version"])||!configValid(d["config"])||!scheduleValid(d["schedules"],d["config"]["max_portion_g"].as<float>())){event("REJECTED","INVALID_CONFIG_OR_SCHEDULE");return;}
@@ -458,10 +474,93 @@ void heartbeat(){
   h["daily_dispensed_g"]=state["used_g"];h["daily_feed_count"]=state["feed_count"];
   String b;serializeJson(h,b);if(!mqtt.publish((root+"/telemetry").c_str(),b.c_str(),false,0))Serial.println("TELEMETRY_PUBLISH_FAILED");
 }
+void clearRecoveryMarkers(){
+  state.remove("sim_outage_s");state.remove("recovery_elapsed_s");
+}
+void processPowerRecovery(){
+  if(!recoveryPending||!storageOK||state["active"].isNull()||!validTime())return;
+  const unsigned long waitLimit=(unsigned long)cf("feed_timeout_s")*1000UL;
+  if(!weightOK||!weightFilterReady()||millis()-stableAt<700){
+    if(millis()-recoveryPendingSince<waitLimit)return;
+    JsonDocument interrupted;interrupted.set(state["active"]);
+    state["active"]=nullptr;state["locked"]=true;state["last_end"]=nowSec();
+    recoveryPending=false;clearRecoveryMarkers();uiStatus="RECOVERY_SCALE_UNSTABLE";
+    result(interrupted.as<JsonVariantConst>(),"INTERRUPTED",0,"RECOVERY_SCALE_UNSTABLE",false);
+    syncTelemetryPending=true;if(mqtt.connected())heartbeat();
+    return;
+  }
+
+  long simulatedOutage=-1;
+#if WOKWI_SIM
+  if(numeric(state["sim_outage_s"],0,30L*86400,true))simulatedOutage=state["sim_outage_s"].as<long>();
+#endif
+  JsonDocument saved;saved.set(state["active"]);
+  if(simulatedOutage>0)saved["started_at"]=nowSec()-simulatedOutage;
+  JsonVariantConst command=saved.as<JsonVariantConst>();
+  const float target=command["target_portion_g"].as<float>();
+  const float baseline=command["baseline"].as<float>();
+  const float actual=max(0.0f,weightG-baseline);
+  const float tolerance=cf("tolerance_g");
+  const long startedAt=command["started_at"].as<long>();
+
+  if(actual>target+tolerance||actual>=target-tolerance){
+    state["active"]=nullptr;state["locked"]=false;state["last_end"]=nowSec();
+    state["used_g"]=max(0.0f,state["used_g"].as<float>()-target+actual);
+    recoveryPending=false;clearRecoveryMarkers();
+    const bool over=actual>target+tolerance;
+    uiStatus=over?"OVER_PORTION":"SUCCESS";result(command,over?"OVER_PORTION":"SUCCESS",actual,over?"OVER_PORTION":nullptr,true);
+    syncTelemetryPending=true;if(mqtt.connected())heartbeat();
+    return;
+  }
+
+  long elapsed=simulatedOutage;
+  if(elapsed<0&&numeric(state["recovery_elapsed_s"],0,30L*86400,true))elapsed=state["recovery_elapsed_s"].as<long>();
+  if(elapsed<0){
+    const long sessionAge=nowSec()-startedAt;
+    // Without a restored server timestamp, session age is a conservative upper
+    // bound for the outage because the interrupted feed began before power loss.
+    if(sessionAge<0)return;
+    if(millis()-recoveryPendingSince<10000)return;
+    elapsed=sessionAge;
+  }
+
+  const float remaining=max(0.0f,target-actual);
+  const bool bowlHasRoom=weightG+remaining<=cf("bowl_capacity_g");
+  const bool waitForUser=elapsed>3600||!bowlHasRoom;
+  if(waitForUser){
+    state["active"]=nullptr;state["locked"]=false;
+    state["last_end"]=startedAt>0?startedAt:nowSec()-3601;
+    state["used_g"]=max(0.0f,state["used_g"].as<float>()-target+actual);
+    recoveryPending=false;clearRecoveryMarkers();uiStatus="POWER_OUTAGE_RETRY_REQUIRED";
+    result(command,"INTERRUPTED",actual,"POWER_OUTAGE_RETRY_REQUIRED",true);
+    syncTelemetryPending=true;if(mqtt.connected())heartbeat();
+    return;
+  }
+
+  // Continue the original session from the measured bowl weight. Preserve its
+  // baseline so finish() accounts for the full amount across both attempts.
+  state["locked"]=false;state["active"]["started_at"]=nowSec();
+  state["active"]["recovery_count"]=state["active"]["recovery_count"].as<int>()+1;
+  clearRecoveryMarkers();
+  if(!persist())return;
+  recoveryPending=false;busy=true;feedAt=millis();servoAt=millis();pulseBaseline=weightG;
+  finePulse=remaining<=cf("coarse_fine_threshold_g");uiStatus="DANG CAP";servo(true);toneNotice();
+  JsonDocument measured;measured.set(actual);
+  remember(command,"DISPENSING",actual);
+  emit("DISPENSING",command,measured.as<JsonVariantConst>(),"POWER_RESTORED_AUTO_RESUME");
+  syncTelemetryPending=true;if(mqtt.connected())heartbeat();
+}
 void serialCommand(String line){
   line.trim();
 #if WOKWI_SIM
   if((line=="sim auto"||line=="sim manual")&&!busy){simAuto=line=="sim auto";state["sim_auto"]=simAuto;persist();Serial.println(simAuto?"MÔ PHỎNG HX711: cân tăng theo nhịp servo; đây không phải lượng đo thật.":"CẢM BIẾN THẬT: dùng HX711/Wokwi để thay đổi số cân.");return;}
+  if(line.startsWith("sim powerloss ")&&busy){
+    const long seconds=line.substring(14).toInt();
+    if(seconds<0||seconds>30L*86400){Serial.println("Dùng: sim powerloss 30 hoặc sim powerloss 3601 (chỉ để thử trên Wokwi). ");return;}
+    servo(false);state["sim_outage_s"]=seconds;
+    if(persist()){Serial.printf("Wokwi: giả lập mất điện %ld giây rồi khởi động lại...\n",seconds);delay(100);ESP.restart();}
+    return;
+  }
 #endif
   if(line=="status"){heartbeat();Serial.printf("Trạng thái: cân=%.1f g | đã cân chỉnh=%s | giờ hợp lệ=%s | đang cấp=%s | Wi-Fi=%s | MQTT=%s | mã MQTT=%d\n",weightG,state["calibrated"].as<bool>()?"có":"không",validTime()?"có":"không",busy?"có":"không",WiFi.status()==WL_CONNECTED?"đã nối":"mất kết nối",mqtt.connected()?"đã nối":"mất kết nối",static_cast<int>(mqtt.lastError()));}
   else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("ĐÃ CÂN CHỈNH: đã lưu mức cân khi bát rỗng.");}
@@ -469,7 +568,7 @@ void serialCommand(String line){
   else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
     state["locked"]=false;state["last_end"]=nowSec();persist();event("RECONCILED","DAILY_RESERVATION_RETAINED");}
   else if(line.startsWith("{")){JsonDocument d;if(!deserializeJson(d,line))receive(d.as<JsonVariantConst>());else event("REJECTED","INVALID_JSON");}
-  else Serial.println("Lệnh: status | tare EMPTY | factor N | reconcile CHECKED | hoặc dán lệnh JSON");
+  else Serial.println("Lệnh: status | sim auto | sim manual | sim powerloss GIÂY | tare EMPTY | factor N | reconcile CHECKED | hoặc dán lệnh JSON");
 }
 void setup(){
   Serial.begin(115200);bootId=id();
@@ -550,8 +649,8 @@ void setup(){
     if(changed)persist();
   }
   if(storageOK&&!state["active"].isNull()){
-    JsonDocument old;old.set(state["active"]);state["active"]=nullptr;state["locked"]=true;
-    result(old.as<JsonVariantConst>(),"INTERRUPTED",0,"RECONCILIATION_REQUIRED",false);
+    recoveryPending=true;recoveryPendingSince=millis();state["locked"]=true;uiStatus="PHUC HOI";persist();
+    Serial.println("Phát hiện phiên cấp dang dở trong NVS; chờ đồng bộ giờ và cân ổn định để phục hồi.");
   }
   #if WOKWI_SIM
   simAuto=storageOK&&state["sim_auto"].as<bool>();
@@ -656,6 +755,7 @@ void loop(){
       }
     }
   }
+  processPowerRecovery();
   if(ms-scanAt>=1000){
     scanAt=ms;scanSchedules();
     static bool invalidReported=false;

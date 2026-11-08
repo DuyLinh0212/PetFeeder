@@ -25,9 +25,15 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   int _portion = 30;
   bool _submitting = false;
+  bool _retryingRecovery = false;
 
   Future<void> _feed() async {
-    if (_submitting || widget.status?.online != true) return;
+    if (_submitting ||
+        widget.status?.online != true ||
+        widget.status?.locked == true ||
+        widget.status?.recoveryRequired != null) {
+      return;
+    }
     setState(() => _submitting = true);
     Map<String, dynamic>? result;
     try {
@@ -82,6 +88,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Future<void> _retryRecovery(Map<String, dynamic> recovery) async {
+    if (_retryingRecovery || widget.status?.online != true) return;
+    final commandId = recovery['command_id'] as String?;
+    if (commandId == null || commandId.isEmpty) return;
+    setState(() => _retryingRecovery = true);
+    try {
+      final result = await ApiService().retryInterruptedFeed(
+        commandId: commandId,
+      );
+      if (!mounted) return;
+      final amount = (result['remaining_portion_g'] as num?)?.toDouble();
+      showFeedback(
+        context,
+        amount == null
+            ? 'Đã gửi yêu cầu cấp lại.'
+            : 'Đã gửi yêu cầu cấp lại ${amount.toStringAsFixed(1)} g.',
+      );
+      await widget.onRefresh();
+    } catch (error) {
+      if (mounted) {
+        showFeedback(
+          context,
+          error.toString().replaceFirst('Exception: ', ''),
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _retryingRecovery = false);
+    }
+  }
+
   String _systemLabel(String value) => switch (value.trim().toUpperCase()) {
     'CONFIG_APPLIED' => 'Đã đồng bộ cài đặt',
     'CLOCK_SYNCED' => 'Đã đồng bộ giờ thiết bị',
@@ -104,6 +141,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'COOLDOWN' => 'Đang trong khoảng chờ bảo vệ',
     'TIMEOUT' => 'Đã dừng sau thời gian cấp tối đa',
     'INTERRUPTED' => 'Phiên cấp bị gián đoạn',
+    'PHUC HOI' => 'Đang khôi phục phiên cấp',
+    'POWER_OUTAGE_RETRY_REQUIRED' => 'Có phiên cấp đang chờ bạn xác nhận',
+    'RECOVERY_SCALE_UNSTABLE' => 'Cân chưa ổn định sau khi khởi động',
     'DANG CAP' => 'Đang cấp thức ăn',
     'KHOI DONG' => 'Thiết bị đang khởi động',
     'KET NOI WIFI...' => 'Thiết bị đang kết nối Wi-Fi',
@@ -174,6 +214,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final status = widget.status;
     final online = status?.online == true;
     final maxPortion = status?.maxPortionG ?? 100;
+    final recovery = status?.recoveryRequired;
     final selectedPortion = _portion
         .clamp(maxPortion < 10 ? maxPortion : 10, maxPortion)
         .toInt();
@@ -249,6 +290,80 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ),
                     ),
+                  ],
+                ),
+              ),
+            if (recovery != null)
+              Container(
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentAmber.withAlpha(20),
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(
+                          Icons.power_off_rounded,
+                          color: AppTheme.accentAmber,
+                        ),
+                        SizedBox(width: 9),
+                        Expanded(
+                          child: Text(
+                            'Phiên cấp bị gián đoạn',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 7),
+                    Text(
+                      'Đã cân được ${(recovery['actual_weight_g'] as num).toStringAsFixed(1)} g. Còn khoảng ${(recovery['remaining_portion_g'] as num).toStringAsFixed(1)} g. Thiết bị chờ bạn xác nhận cấp lại.',
+                      style: const TextStyle(
+                        color: AppTheme.textMuted,
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 11),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: online && !_retryingRecovery
+                            ? () => _retryRecovery(recovery)
+                            : null,
+                        icon: _retryingRecovery
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.replay_rounded),
+                        label: Text(
+                          _retryingRecovery
+                              ? 'Đang gửi lệnh…'
+                              : 'Cấp lại · ${(recovery['remaining_portion_g'] as num).toStringAsFixed(1)} g',
+                        ),
+                      ),
+                    ),
+                    if (!online)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 7),
+                        child: Text(
+                          'Kết nối lại thiết bị để gửi yêu cầu cấp lại.',
+                          style: TextStyle(
+                            color: AppTheme.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -394,7 +509,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     width: double.infinity,
                     child: FilledButton.icon(
                       key: const ValueKey('feed-now'),
-                      onPressed: !online || _submitting || widget.isLoading
+                      onPressed:
+                          !online ||
+                              status?.locked == true ||
+                              recovery != null ||
+                              _submitting ||
+                              widget.isLoading
                           ? null
                           : () {
                               _portion = selectedPortion;
@@ -410,6 +530,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       label: Text(
                         _submitting
                             ? 'Đang gửi yêu cầu…'
+                            : status?.locked == true
+                            ? 'Thiết bị đang phục hồi…'
+                            : recovery != null
+                            ? 'Xử lý cấp lại ở trên'
                             : 'Cho ăn · $selectedPortion g',
                       ),
                     ),

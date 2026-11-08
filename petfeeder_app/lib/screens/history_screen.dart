@@ -7,7 +7,11 @@ import '../widgets/app_components.dart';
 class HistoryScreen extends StatefulWidget {
   final Future<void> Function() onRefresh;
   final int refreshToken;
-  const HistoryScreen({super.key, required this.onRefresh, this.refreshToken=0});
+  const HistoryScreen({
+    super.key,
+    required this.onRefresh,
+    this.refreshToken = 0,
+  });
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -29,7 +33,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   void didUpdateWidget(covariant HistoryScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if(widget.refreshToken!=oldWidget.refreshToken)_load();
+    if (widget.refreshToken != oldWidget.refreshToken) _load();
   }
 
   Future<void> _load() async {
@@ -95,6 +99,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   ({String label, Color color, IconData icon}) _state(FeedingRecord row) {
     final status = row.status.toUpperCase();
+    if (status == 'INTERRUPTED' &&
+        row.errorCode == 'POWER_OUTAGE_RETRY_REQUIRED') {
+      return (
+        label: 'Chờ cấp lại',
+        color: AppTheme.accentAmber,
+        icon: Icons.replay_rounded,
+      );
+    }
     if (status == 'SUCCESS' || status == 'HOAN TAT') {
       return (
         label: 'Hoàn tất',

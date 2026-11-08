@@ -53,6 +53,17 @@ class ApiService {
       _client?.patch(uri) ?? http.patch(uri);
   Future<http.Response> _delete(Uri uri) =>
       _client?.delete(uri) ?? http.delete(uri);
+  Future<http.Response> _deleteJson(Uri uri, {required String body}) =>
+      _client?.delete(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: body,
+      ) ??
+      http.delete(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: body,
+      );
 
   // Mặc định:
   // http://10.0.2.2:3000 khi chạy trên Android Emulator
@@ -101,6 +112,46 @@ class ApiService {
       throw Exception(
         body['message'] ?? 'Không lưu được địa chỉ kết nối lên máy chủ.',
       );
+    }
+  }
+
+  Future<bool> registerNotificationFid({
+    required String fid,
+    required String installationId,
+    required String platform,
+  }) async {
+    final response = await _post(
+      Uri.parse('$baseUrl/api/notifications/register'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'fid': fid,
+        'installation_id': installationId,
+        'platform': platform,
+      }),
+    ).timeout(const Duration(seconds: 8));
+    final data = _feedBody(utf8.decode(response.bodyBytes));
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['message'] ?? 'Không đăng ký được thông báo.');
+    }
+    final result = data['data'];
+    return result is Map && result['push_enabled'] == true;
+  }
+
+  Future<void> unregisterNotificationFid({
+    required String fid,
+    required String installationId,
+    required String platform,
+  }) async {
+    final response = await _deleteJson(
+      Uri.parse('$baseUrl/api/notifications/register'),
+      body: jsonEncode({
+        'fid': fid,
+        'installation_id': installationId,
+        'platform': platform,
+      }),
+    ).timeout(const Duration(seconds: 8));
+    if (response.statusCode != 200) {
+      throw Exception('Không gỡ được đăng ký thông báo khỏi máy chủ.');
     }
   }
 
@@ -254,6 +305,24 @@ class ApiService {
         mayHaveBeenSent: submitted,
       );
     }
+  }
+
+  Future<Map<String, dynamic>> retryInterruptedFeed({
+    required String commandId,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/feeding/recovery/${Uri.encodeComponent(commandId)}/retry',
+    );
+    final response = await _post(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(const <String, dynamic>{}),
+    ).timeout(const Duration(seconds: 8));
+    final data = _feedBody(utf8.decode(response.bodyBytes));
+    if (response.statusCode == 200 && data['success'] == true) {
+      return Map<String, dynamic>.from(data['data'] as Map);
+    }
+    throw Exception(data['message'] ?? 'Chưa thể cấp lại phần còn thiếu.');
   }
 
   Map<String, dynamic> _feedBody(String body) {

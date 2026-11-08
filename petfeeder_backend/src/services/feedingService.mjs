@@ -36,8 +36,12 @@ export class FeedingService {
   }
 
   async syncPayload(){
-    const payload={config:await this.settings(),schedules:await this.store.get('schedules')||[]};
-    return {...payload,version:createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0,16),server_time:this.clock()};
+    const [savedConfig,schedulesList,h]=await Promise.all([
+      this.settings(),this.store.get('schedules'),this.store.get('heartbeat'),
+    ]);
+    const payload={config:savedConfig,schedules:schedulesList||[]};
+    return {...payload,version:createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0,16),
+      server_time:this.clock(),previous_device_seen_at:h?.previous_device_seen_at??h?.received_at??null};
   }
 
   async sync(){
@@ -85,7 +89,10 @@ export class FeedingService {
     if(typeof h.busy!=='boolean')throw new Invalid('INVALID_HEARTBEAT');
     if(h.weight_g!==null)number(h.weight_g,0,5000,'weight_g');
     const previous=await this.store.get('heartbeat');
-    await this.store.put('heartbeat','state',{...h,received_at:this.clock()});
+    const previousDeviceSeenAt=previous?.boot_id===h.boot_id
+      ?previous?.previous_device_seen_at??previous?.received_at??null
+      :previous?.received_at??null;
+    await this.store.put('heartbeat','state',{...h,previous_device_seen_at:previousDeviceSeenAt,received_at:this.clock()});
     const clockDrift=Number.isInteger(h.occurred_at)&&Math.abs(this.clock()-h.occurred_at)>3;
     const hasConfigVersion=typeof h.config_version==='string'&&h.config_version.length>0;
     const version=(await this.syncPayload()).version,now=this.clock();

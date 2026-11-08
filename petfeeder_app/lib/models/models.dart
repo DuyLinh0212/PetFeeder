@@ -21,6 +21,7 @@ class DeviceStatus {
   final bool locked;
   final bool timeValid;
   final String sensorMode;
+  final Map<String, dynamic>? recoveryRequired;
 
   const DeviceStatus({
     required this.deviceId,
@@ -45,6 +46,7 @@ class DeviceStatus {
     required this.locked,
     required this.timeValid,
     required this.sensorMode,
+    required this.recoveryRequired,
   });
 
   factory DeviceStatus.fromJson(Map<String, dynamic> json) {
@@ -61,7 +63,8 @@ class DeviceStatus {
       ipAddress: json['ip_address'] as String? ?? '',
       wifiRssi: (json['wifi_rssi'] as num?)?.toInt() ?? 0,
       pendingEvents: (json['pending_events'] as num?)?.toInt() ?? 0,
-      outboxOverflowCount: (json['outbox_overflow_count'] as num?)?.toInt() ?? 0,
+      outboxOverflowCount:
+          (json['outbox_overflow_count'] as num?)?.toInt() ?? 0,
       lastSeen: json['last_seen'] as String?,
       mqttConnected: json['mqtt_connected'] == true,
       minIntervalSec: (json['min_interval_s'] as num?)?.toInt() ?? 180,
@@ -74,6 +77,9 @@ class DeviceStatus {
       locked: json['locked'] == true,
       timeValid: json['time_valid'] == true,
       sensorMode: json['sensor_mode'] as String? ?? 'UNKNOWN',
+      recoveryRequired: json['recovery_required'] is Map
+          ? Map<String, dynamic>.from(json['recovery_required'] as Map)
+          : null,
     );
   }
 }

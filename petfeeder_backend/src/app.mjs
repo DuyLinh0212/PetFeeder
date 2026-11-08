@@ -7,6 +7,7 @@ import {Storage} from './storage/database.mjs';
 import {PostgresStorage} from './storage/postgres.mjs';
 import {migrateLegacy} from './storage/legacyMigration.mjs';
 import {createApiRouter} from './routes/index.mjs';
+import {PushNotificationService} from './services/pushNotificationService.mjs';
 
 const validIdentifier=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,96}$/.test(value);
 function epochSeconds(value,fallback){
@@ -88,6 +89,7 @@ export async function createBackend({dataDir,legacyFile,brokerUrl,databaseUrl,st
     await db.initialize?.();
     await migrateLegacy(db,legacyFile??(dataDir?null:fileURLToPath(new URL('../data/database.json',import.meta.url))));
   } catch(error) { await db.close?.(); throw error; }
+  const pushNotifications=new PushNotificationService(db);
   let service,client;
   let realtimePublisher=()=>{};
   const transport=injected||{mode:'MQTT',send(kind,body){
@@ -104,7 +106,18 @@ export async function createBackend({dataDir,legacyFile,brokerUrl,databaseUrl,st
     }
     else if(topic===`${prefix}/events`){
       const {event,ackId}=await normalizeEvent(payload,body,db,clock);
-      await service.event(event); // Commit to PostgreSQL before acknowledging the event.
+      const persisted=await service.event(event); // Commit before acknowledgment or push delivery.
+      if(event.status==='INTERRUPTED'&&event.error_code==='POWER_OUTAGE_RETRY_REQUIRED'){
+        const heartbeat=await db.get('heartbeat');
+        if(heartbeat?.device_id===event.device_id){
+          await db.put('heartbeat','state',{...heartbeat,status:'POWER_OUTAGE_RETRY_REQUIRED',
+            busy:false,locked:false,received_at:clock()});
+        }
+        if(!persisted.duplicate){
+          try { await pushNotifications.sendPowerRecovery(event); }
+          catch(error) { console.error('[FCM] Không gửi được cảnh báo mất điện:',error.message); }
+        }
+      }
       if(ackId)client?.publish(`${prefix}/ack`,JSON.stringify({event_id:ackId}),{qos:1,retain:false});
       realtimePublisher({type:'feeding_event',data:event});
       realtimePublisher({type:'device_state',data:await device()});
@@ -151,9 +164,10 @@ export async function createBackend({dataDir,legacyFile,brokerUrl,databaseUrl,st
   }
   const timer=setInterval(()=>void tick().catch(e=>console.error('[DB] Không cập nhật được trạng thái lệnh:',e.message)),1000);timer.unref();
   const connected=()=>injected?true:!!client?.connected;
-  const {router,device}=createApiRouter({db,service,clock,connected,publishRealtime:message=>realtimePublisher(message)});
+  const {router,device}=createApiRouter({db,service,clock,connected,
+    publishRealtime:message=>realtimePublisher(message),pushNotifications});
   return {
-    router,service,db,device,onMessage,tick,connected,
+    router,service,db,device,onMessage,tick,connected,pushNotifications,
     setRealtimePublisher(publish){realtimePublisher=typeof publish==='function'?publish:()=>{};},
     async close(){clearInterval(timer);if(client)await new Promise(resolve=>client.end(true,resolve));await db.close?.();},
   };

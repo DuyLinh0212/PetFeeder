@@ -1,4 +1,5 @@
 import express from 'express';
+import {randomUUID} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {Invalid,object,identifier} from '../domain/feedingPolicy.mjs';
 
@@ -52,13 +53,25 @@ function validAddress(value){
   return address;
 }
 
-export function createApiRouter({db,service,clock,connected,publishRealtime=()=>{}}){
+export function createApiRouter({db,service,clock,connected,publishRealtime=()=>{},
+  pushNotifications={enabled:false,register:async()=>({registered:true,push_enabled:false}),unregister:async()=>({registered:false})}}){
   const router=express.Router();
   let lastFeedRequestAt=-Infinity;
+  const recoveryRetries=new Map();
   const ok=(res,data,extra={})=>res.json({success:true,data,...extra});
 
   async function device(){
     const s=await service.state(),h=s.device||{};
+    const retryable=s.commands.find(row=>row.status==='INTERRUPTED'&&
+      row.error_code==='POWER_OUTAGE_RETRY_REQUIRED'&&!row.recovery_retry_command_id&&
+      typeof row.target_portion_g==='number'&&typeof row.actual_weight_g==='number'&&
+      row.target_portion_g-row.actual_weight_g>=1);
+    const recovery=retryable?{
+      command_id:retryable.command_id,target_portion_g:retryable.target_portion_g,
+      actual_weight_g:retryable.actual_weight_g,
+      remaining_portion_g:Math.round((retryable.target_portion_g-retryable.actual_weight_g)*10)/10,
+      occurred_at:retryable.occurred_at??null,
+    }:null;
     return {device_id:h.device_id||'petfeeder_01',online:s.connection!=='OFFLINE',mqtt_connected:connected(),
       system_status:s.connection==='BUSY'?'DANG CHO AN...':s.connection==='OFFLINE'?'NGOAI TUYEN':h.status||'SAN SANG',
       bowl_weight_g:h.weight_g??null,food_level_percent:h.food_level_percent??null,
@@ -68,6 +81,7 @@ export function createApiRouter({db,service,clock,connected,publishRealtime=()=>
       daily_limit_g:s.config.daily_limit_g,max_daily_feeds:s.config.max_daily_feeds,
       bowl_capacity_g:s.config.bowl_capacity_g,daily:s.daily,locked:h.locked??true,
       time_valid:h.time_valid??false,sensor_mode:h.sensor_mode||'UNKNOWN',
+      recovery_required:recovery,
       last_seen:h.received_at?new Date(h.received_at*1000).toISOString():null};
   }
 
@@ -105,6 +119,29 @@ export function createApiRouter({db,service,clock,connected,publishRealtime=()=>
   }));
   router.get('/device/status',asyncRoute(async(req,res)=>ok(res,await device())));
   router.get('/device/config',asyncRoute(async(req,res)=>ok(res,await service.settings())));
+  router.post('/notifications/register',asyncRoute(async(req,res)=>{
+    const body=object(req.body);
+    for(const key of Object.keys(body))if(!['fid','installation_id','platform'].includes(key))throw new Invalid('UNKNOWN_FIELD',key);
+    if(typeof body.fid!=='string'||body.fid.length<20||body.fid.length>256||/\s/.test(body.fid))
+      throw new Invalid('INVALID_FIELD','fid');
+    identifier(body.installation_id,'installation_id');
+    if(!['android','ios'].includes(body.platform))throw new Invalid('INVALID_FIELD','platform');
+    const state=await service.state();
+    const deviceId=state.device?.device_id||'petfeeder_01';
+    return ok(res,await pushNotifications.register({fid:body.fid,deviceId,
+      installationId:body.installation_id,platform:body.platform}));
+  }));
+  router.delete('/notifications/register',asyncRoute(async(req,res)=>{
+    const body=object(req.body);
+    for(const key of Object.keys(body))if(!['fid','installation_id','platform'].includes(key))throw new Invalid('UNKNOWN_FIELD',key);
+    if(typeof body.fid!=='string'||body.fid.length<20||body.fid.length>256||/\s/.test(body.fid))
+      throw new Invalid('INVALID_FIELD','fid');
+    identifier(body.installation_id,'installation_id');
+    if(!['android','ios'].includes(body.platform))throw new Invalid('INVALID_FIELD','platform');
+    const state=await service.state();
+    const deviceId=state.device?.device_id||'petfeeder_01';
+    return ok(res,await pushNotifications.unregister({deviceId,installationId:body.installation_id}));
+  }));
   router.put('/device/config',asyncRoute(async(req,res)=>{
     const result=await service.configure(req.body);
     publishRealtime({type:'config_updated',data:result});
@@ -139,6 +176,48 @@ export function createApiRouter({db,service,clock,connected,publishRealtime=()=>
       :failed?`${rejectionMessages[reason]||rejectionMessages[result.status]||'Hệ thống chưa thể thực hiện yêu cầu.'}${reason?` (${reason})`:''}`
       :'Đã nhận yêu cầu; đang chờ ESP32 xác nhận kết quả.';
     return res.status(failed?409:200).json({success:!failed,code:reason||result.status,message,data:result});
+  }));
+  router.post('/feeding/recovery/:commandId/retry',asyncRoute(async(req,res)=>{
+    const originalId=identifier(req.params.commandId,'command_id');
+    const attempt=async()=>{
+      const original=await db.get('commands',originalId);
+      if(!original)return {status:404,body:{success:false,code:'COMMAND_NOT_FOUND',message:'Không tìm thấy phiên cấp bị gián đoạn.'}};
+      if(original.recovery_retry_command_id){
+        const retry=await db.get('commands',original.recovery_retry_command_id);
+        return {status:200,body:{success:true,code:'RETRY_ALREADY_SENT',message:'Lệnh cấp lại đã được gửi trước đó.',data:retry}};
+      }
+      if(original.status!=='INTERRUPTED'||original.error_code!=='POWER_OUTAGE_RETRY_REQUIRED')
+        return {status:409,body:{success:false,code:'RECOVERY_NOT_AVAILABLE',message:'Phiên này không còn yêu cầu cấp lại.'}};
+      if(typeof original.target_portion_g!=='number'||typeof original.actual_weight_g!=='number')
+        return {status:409,body:{success:false,code:'RECOVERY_WEIGHT_UNKNOWN',message:'Chưa có số cân đáng tin cậy để tính phần còn thiếu.'}};
+      const portion=Math.round((original.target_portion_g-original.actual_weight_g)*10)/10;
+      if(portion<1)return {status:409,body:{success:false,code:'RECOVERY_COMPLETE',message:'Số cân cho thấy khẩu phần đã đủ; không cần cấp lại.'}};
+      const settings=await service.settings(),createdAt=clock();
+      const command={command_id:randomUUID(),source:'APP',target_portion_g:portion,
+        created_at:createdAt,expires_at:createdAt+settings.command_ttl_s};
+      const result=await service.feed(command);
+      if(result.status==='QUEUED'||result.status==='PUBLISHED'||result.status==='ACCEPTED'){
+        const latest=await db.get('commands',originalId)||original;
+        await db.put('commands',originalId,{...latest,recovery_retry_command_id:command.command_id,
+          recovery_retry_requested_at:clock()});
+        publishRealtime({type:'feeding_command',data:result});
+        publishRealtime({type:'recovery_retry',data:{original_command_id:originalId,command:result}});
+        publishRealtime({type:'device_state',data:await device()});
+        return {status:200,body:{success:true,code:'RECOVERY_RETRY_QUEUED',
+          message:`Đã gửi lệnh cấp lại phần còn thiếu ${portion} g.`,data:{...result,remaining_portion_g:portion}}};
+      }
+      const reason=result.error_code||result.status;
+      const message=rejectionMessages[reason]||'Chưa thể gửi lệnh cấp lại. Kiểm tra thiết bị rồi thử lại.';
+      return {status:409,body:{success:false,code:reason,message,data:result}};
+    };
+    let pending=recoveryRetries.get(originalId);
+    if(!pending){pending=attempt();recoveryRetries.set(originalId,pending);}
+    try{
+      const outcome=await pending;
+      return res.status(outcome.status).json(outcome.body);
+    }finally{
+      if(recoveryRetries.get(originalId)===pending)recoveryRetries.delete(originalId);
+    }
   }));
   router.get('/schedules',asyncRoute(async(req,res)=>{
     const rows=(await db.get('schedules')||[]).map(fromSchedule);

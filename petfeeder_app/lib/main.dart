@@ -7,10 +7,12 @@ import 'screens/dashboard_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/schedules_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/notification_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await ApiService().initialize();
+  await NotificationService.instance.initialize();
   runApp(const PetFeederApp());
 }
 

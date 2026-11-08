@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
 import 'safety_settings.dart';
@@ -18,11 +19,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _testing = false;
   String? _connectionMessage;
   bool _connectionOk = false;
+  bool _notificationsEnabled = false;
+  bool _notificationsBusy = false;
+  bool? _pushDeliveryReady;
+  String? _notificationMessage;
 
   @override
   void initState() {
     super.initState();
     _url.text = ApiService().baseUrl;
+    _loadNotificationState();
+  }
+
+  Future<void> _loadNotificationState() async {
+    final enabled = await NotificationService.instance.isEnabled();
+    if (mounted) setState(() => _notificationsEnabled = enabled);
+  }
+
+  Future<void> _setNotificationsEnabled(bool enabled) async {
+    if (_notificationsBusy) return;
+    setState(() {
+      _notificationsBusy = true;
+      _notificationMessage = null;
+    });
+    try {
+      if (enabled) {
+        final deliveryReady = await NotificationService.instance
+            .requestPermissionAndEnable();
+        if (!mounted) return;
+        setState(() {
+          _notificationsEnabled = true;
+          _pushDeliveryReady = deliveryReady;
+          _notificationMessage = deliveryReady
+              ? 'Đã bật thông báo cho thiết bị này.'
+              : 'Đã cấp quyền trên điện thoại. Backend cần cấu hình Firebase Admin để gửi thông báo.';
+        });
+      } else {
+        await NotificationService.instance.disable();
+        if (!mounted) return;
+        setState(() {
+          _notificationsEnabled = false;
+          _pushDeliveryReady = null;
+          _notificationMessage = 'Đã tắt thông báo cho thiết bị này.';
+        });
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _notificationsEnabled = false;
+        _notificationMessage = error.toString().replaceFirst('Bad state: ', '');
+      });
+    } finally {
+      if (mounted) setState(() => _notificationsBusy = false);
+    }
   }
 
   @override
@@ -42,7 +91,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final status = await ApiService().getDeviceStatus(serverUrl: candidate);
       if (!mounted) return;
-      await ApiService().saveConnectionAddress(candidate,serverUrl:candidate);
+      await ApiService().saveConnectionAddress(candidate, serverUrl: candidate);
       await ApiService().setBaseUrl(candidate);
       if (!mounted) return;
       setState(() {
@@ -197,6 +246,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        SectionCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: const BoxDecoration(
+                      color: AppTheme.primaryLight,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.notifications_active_outlined,
+                      color: AppTheme.primary,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Thông báo',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                !NotificationService.instance.supportedPlatform
+                    ? 'Thông báo đẩy dùng trên Android và iOS.'
+                    : !NotificationService.instance.configured
+                    ? 'Cần cấu hình Firebase cho App trước khi bật thông báo. Xem docs/FCM_NOTIFICATIONS.md.'
+                    : 'Nhận cảnh báo ngay cả khi App đang chạy nền.',
+                style: const TextStyle(color: AppTheme.textMuted, height: 1.5),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Cho phép thông báo đẩy'),
+                subtitle: Text(
+                  _notificationsBusy
+                      ? 'Đang cập nhật…'
+                      : _notificationsEnabled && _pushDeliveryReady == false
+                      ? 'Đã có quyền điện thoại; máy chủ chưa bật dịch vụ gửi.'
+                      : 'Cảnh báo phiên cấp bị gián đoạn cần xác nhận.',
+                ),
+                value: _notificationsEnabled,
+                onChanged:
+                    _notificationsBusy ||
+                        !NotificationService.instance.supportedPlatform ||
+                        !NotificationService.instance.configured
+                    ? null
+                    : _setNotificationsEnabled,
+              ),
+              if (_notificationMessage != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _notificationMessage!,
+                  style: TextStyle(
+                    color: _notificationMessage!.startsWith('Đã')
+                        ? AppTheme.accentGreen
+                        : AppTheme.accentCoral,
+                    height: 1.45,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
         const SizedBox(height: 20),
