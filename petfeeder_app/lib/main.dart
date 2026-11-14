@@ -65,7 +65,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     final data = event['data'];
     if (type == 'realtime_connection') {
       final connected = event['connected'] == true;
-      if (mounted)
+      if (mounted) {
         setState(() {
           _realtimeConnected = connected;
           if (connected) {
@@ -75,15 +75,17 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
             _freshSnapshotAvailable = false;
           }
         });
+      }
     } else if ((type == 'snapshot' ||
             type == 'device_state' ||
             type == 'snapshot_fallback') &&
         data is Map<String, dynamic>) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _deviceStatus = DeviceStatus.fromJson(data);
           _freshSnapshotAvailable = true;
         });
+      }
     } else if (type == 'snapshot_unavailable') {
       if (mounted) setState(() => _freshSnapshotAvailable = false);
     } else if (type == 'feeding_event' || type == 'feeding_command') {
@@ -103,17 +105,19 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     if (!silent && mounted) setState(() => _isLoading = true);
     try {
       final status = await ApiService().getDeviceStatus();
-      if (mounted)
+      if (mounted) {
         setState(() {
           _deviceStatus = status;
           _freshSnapshotAvailable = true;
         });
+      }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _deviceStatus = null;
           _freshSnapshotAvailable = false;
         });
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

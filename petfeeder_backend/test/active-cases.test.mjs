@@ -39,8 +39,9 @@ test('C03 duplicate IDs and simultaneous sources cannot start a second session',
 test('N01 portion is additional to bowl weight and cannot exceed bowl capacity',async t=>{
   const fits=await fixture(t);fits.device.sensors.weight_g=130;fits.device.heartbeat();await fits.flushEvents();
   const accepted=await fits.service.feed(fits.command());await fits.flushEvents();
-  assert.equal(accepted.status,'DISPENSING');
+  assert.equal(accepted.command_id,fits.device.s.active.command_id);
   assert.equal(fits.device.s.active.target_portion_g,20);
+  assert.equal((await fits.service.state()).commands.find(row=>row.command_id===accepted.command_id).status,'DISPENSING');
 
   const overflow=await fixture(t);overflow.device.sensors.weight_g=140;overflow.device.heartbeat();await overflow.flushEvents();
   assert.equal((await overflow.service.feed(overflow.command())).error_code,'BOWL_FULL');
@@ -53,7 +54,9 @@ test('N02 daily feed count survives reboot and resets on the next day',async t=>
   await f.boot();
   assert.equal((await f.service.feed(f.command())).error_code,'DAILY_FEED_LIMIT');
   await f.step(86400);
-  assert.equal((await f.service.feed(f.command())).status,'DISPENSING');
+  const nextDay=await f.service.feed(f.command());await f.flushEvents();
+  assert.equal(f.device.s.active.command_id,nextDay.command_id);
+  assert.equal((await f.service.state()).commands.find(row=>row.command_id===nextDay.command_id).status,'DISPENSING');
 });
 
 test('N07/N09 scale interference or negative HX711 bowl-removal proxy stops without a measured result',async t=>{

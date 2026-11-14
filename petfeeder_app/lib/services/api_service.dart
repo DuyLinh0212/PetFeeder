@@ -155,50 +155,121 @@ class ApiService {
     }
   }
 
-  Stream<Map<String, dynamic>> watchRealtime() async* {
+  Stream<Map<String, dynamic>> watchRealtime() {
+    late final StreamController<Map<String, dynamic>> controller;
+    final cancelled = Completer<void>();
     var retrySeconds = 1;
-    while (true) {
-      WebSocketChannel? channel;
-      try {
-        final base = Uri.parse(baseUrl);
-        final uri = base.replace(
-          scheme: base.scheme == 'https' ? 'wss' : 'ws',
-          path: '/api/realtime',
-          query: null,
-          fragment: null,
-        );
-        channel = WebSocketChannel.connect(uri);
-        await channel.ready.timeout(const Duration(seconds: 5));
-        retrySeconds = 1;
-        yield {'type': 'realtime_connection', 'connected': true};
-        await for (final frame in channel.stream) {
-          try {
-            final decoded = jsonDecode(frame.toString());
-            if (decoded is Map<String, dynamic>) yield decoded;
-          } catch (_) {
-            // Ignore malformed frames and keep the live connection.
-          }
+    var stopped = false;
+    WebSocketChannel? channel;
+    Timer? readyTimer;
+    Timer? retryTimer;
+
+    void emit(Map<String, dynamic> event) {
+      if (!stopped && controller.hasListener && !controller.isClosed) {
+        controller.add(event);
+      }
+    }
+
+    Future<void> waitForReady(Future<void> ready) async {
+      final timeout = Completer<void>();
+      readyTimer = Timer(const Duration(seconds: 5), () {
+        if (!timeout.isCompleted) {
+          timeout.completeError(
+            TimeoutException('WebSocket connection timed out'),
+          );
         }
-      } catch (error) {
-        debugPrint('PetFeeder: WebSocket disconnected: $error');
+      });
+      try {
+        await Future.any<void>([ready, timeout.future, cancelled.future]);
       } finally {
+        readyTimer?.cancel();
+        readyTimer = null;
+      }
+    }
+
+    Future<void> waitForRetry() async {
+      final delay = Completer<void>();
+      retryTimer = Timer(Duration(seconds: retrySeconds), delay.complete);
+      try {
+        await Future.any<void>([delay.future, cancelled.future]);
+      } finally {
+        retryTimer?.cancel();
+        retryTimer = null;
+      }
+    }
+
+    Future<void> run() async {
+      while (!stopped) {
+        WebSocketChannel? current;
+        try {
+          final base = Uri.parse(baseUrl);
+          final uri = base.replace(
+            scheme: base.scheme == 'https' ? 'wss' : 'ws',
+            path: '/api/realtime',
+            query: null,
+            fragment: null,
+          );
+          current = WebSocketChannel.connect(uri);
+          channel = current;
+          await waitForReady(current.ready);
+          if (stopped) break;
+          retrySeconds = 1;
+          emit({'type': 'realtime_connection', 'connected': true});
+          await for (final frame in current.stream) {
+            if (stopped) break;
+            try {
+              final decoded = jsonDecode(frame.toString());
+              if (decoded is Map<String, dynamic>) emit(decoded);
+            } catch (_) {
+              // Ignore malformed frames and keep the live connection.
+            }
+          }
+        } catch (error) {
+          if (!stopped) {
+            debugPrint('PetFeeder: WebSocket disconnected: $error');
+          }
+        } finally {
+          readyTimer?.cancel();
+          readyTimer = null;
+          try {
+            await current?.sink.close();
+          } catch (_) {}
+          if (identical(channel, current)) channel = null;
+        }
+
+        if (stopped) break;
+        emit({'type': 'realtime_connection', 'connected': false});
+        try {
+          emit({
+            'type': 'snapshot_fallback',
+            'data': await _getDeviceStatusJson(),
+          });
+        } catch (error) {
+          if (!stopped) {
+            debugPrint('PetFeeder: snapshot fallback failed: $error');
+          }
+          emit({'type': 'snapshot_unavailable'});
+        }
+        if (stopped) break;
+        await waitForRetry();
+        retrySeconds = (retrySeconds * 2).clamp(1, 15).toInt();
+      }
+      if (!stopped && !controller.isClosed) await controller.close();
+    }
+
+    controller = StreamController<Map<String, dynamic>>(
+      onListen: () => unawaited(run()),
+      onCancel: () async {
+        stopped = true;
+        if (!cancelled.isCompleted) cancelled.complete();
+        readyTimer?.cancel();
+        retryTimer?.cancel();
         try {
           await channel?.sink.close();
         } catch (_) {}
-      }
-      yield {'type': 'realtime_connection', 'connected': false};
-      try {
-        yield {
-          'type': 'snapshot_fallback',
-          'data': await _getDeviceStatusJson(),
-        };
-      } catch (error) {
-        debugPrint('PetFeeder: snapshot fallback failed: $error');
-        yield {'type': 'snapshot_unavailable'};
-      }
-      await Future<void>.delayed(Duration(seconds: retrySeconds));
-      retrySeconds = (retrySeconds * 2).clamp(1, 15).toInt();
-    }
+      },
+    );
+    return controller.stream;
   }
 
   // Trạng thái cân, giới hạn ngày và kết nối thiết bị.
