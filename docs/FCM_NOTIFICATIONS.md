@@ -4,27 +4,15 @@ App dùng Firebase Cloud Messaging (FCM). Khi App ở nền hoặc đã đóng, 
 
 Hiện project Flutter có cấu hình Android. Thông báo chỉ được gửi cho sự kiện mất điện quá 1 giờ (`POWER_OUTAGE_RETRY_REQUIRED`); các sự kiện khác tiếp tục hiển thị trong App như hiện tại.
 
-## 1. Tạo cấu hình Firebase cho Android
+## 1. Cấu hình Firebase cho Android
 
-1. Tạo hoặc chọn Firebase project, rồi thêm Android app có package name `com.example.petfeeder_app` (đang khai báo trong `petfeeder_app/android/app/build.gradle.kts`).
-2. Mở Firebase project settings và lấy `apiKey`, `appId`, `messagingSenderId`, `projectId` của Android app.
-3. Bật Firebase Cloud Messaging API (HTTP v1) trong project.
-4. Build App, truyền bốn giá trị ở bước 2 qua Dart defines. Ví dụ trong PowerShell:
+Android đã đăng ký với project `petfeeder-iot-20261108-duytn` bằng package name `com.example.petfeeder_app`. Cấu hình client nằm tại `petfeeder_app/android/app/google-services.json`; Google Services Gradle plugin tạo các giá trị Firebase mà app đọc khi khởi động. Build Android bình thường, không cần truyền `--dart-define`.
 
-```powershell
-cd F:\NgDuyLinh\Do_an\IoT\petfeeder_app
-flutter build apk --release `
-  --dart-define=FIREBASE_API_KEY=AIza... `
-  --dart-define=FIREBASE_APP_ID=1:123456789:android:abcdef `
-  --dart-define=FIREBASE_MESSAGING_SENDER_ID=123456789 `
-  --dart-define=FIREBASE_PROJECT_ID=petfeeder-project
-```
-
-Không đặt service-account key trong App hoặc trong các Dart defines. Firebase Android API key/app ID là giá trị cấu hình client; service-account JSON chỉ được dùng phía backend.
+Không đặt service-account key trong App hoặc trong Dart defines. `google-services.json` chứa định danh client không bí mật; service-account JSON chỉ dùng phía backend.
 
 ## 2. Bật gửi push ở backend
 
-Tạo service account có quyền gửi FCM trong Firebase/Google Cloud project và bật Cloud Messaging API v1. Đặt toàn bộ JSON của service account vào biến môi trường `FIREBASE_SERVICE_ACCOUNT_JSON` ở máy chạy backend hoặc trong phần Environment của Render. Không commit JSON này.
+Backend hiện chưa gửi được push nếu thiếu thông tin xác thực. Tài khoản service account cần role gửi FCM. Ở máy local có thể đặt `FIREBASE_SERVICE_ACCOUNT_FILE=../<ten-file-key>.json`; trên Render đặt nội dung key vào `FIREBASE_SERVICE_ACCOUNT_JSON`. Không commit JSON key này.
 
 Backend lưu Firebase Installation ID (FID) theo từng lần cài đặt và chỉ gửi thông báo sau khi sự kiện đã được lưu thành công. Nếu FCM chưa cấu hình, đăng ký vẫn được lưu nhưng API trả `push_enabled: false`; màn Cài đặt sẽ báo rằng backend chưa bật dịch vụ gửi. Backend log lỗi khởi tạo hoặc gửi FCM mà không in FID.
 
@@ -35,6 +23,6 @@ Backend lưu Firebase Installation ID (FID) theo từng lần cài đặt và ch
 3. Kiểm tra Android Settings → Apps → PetFeeder → Notifications đang bật.
 4. Để App xuống nền hoặc đóng bình thường. Khi backend nhận sự kiện `INTERRUPTED` cùng mã `POWER_OUTAGE_RETRY_REQUIRED`, điện thoại sẽ nhận push để mở App và xác nhận cấp phần còn thiếu.
 
-Nếu tắt công tắc trong App, server ngừng gửi tới lượt cài đặt đó và App xóa token FCM hiện tại. Tắt quyền ở Android Settings cũng chặn hiển thị; cần mở lại quyền và bật công tắc trong App để đăng ký lại.
+Nếu tắt công tắc trong App, server ngừng gửi tới lượt cài đặt đó và App gỡ đăng ký Firebase Installation ID (FID). Tắt quyền ở Android Settings cũng chặn hiển thị; cần mở lại quyền và bật công tắc trong App để đăng ký lại.
 
-Project chưa có thư mục `ios/`. Muốn build iOS cần thêm iOS Runner, cấu hình APNs credentials trong Firebase và khai báo iOS app/options tương ứng trước khi phát hành.
+Project chưa có thư mục `ios/`. Muốn build iOS cần thêm iOS Runner, đăng ký iOS app, thêm `GoogleService-Info.plist` và cấu hình APNs credentials trong Firebase trước khi phát hành.

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "639323866118",
+    "project_id": "petfeeder-iot-20261108-duytn",
+    "storage_bucket": "petfeeder-iot-20261108-duytn.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:639323866118:android:4c95cd8088426cf60faf87",
+        "android_client_info": {
+          "package_name": "com.example.petfeeder_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD4XPjP_RA3uY7RHQu60QR16PD1C49xGC8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

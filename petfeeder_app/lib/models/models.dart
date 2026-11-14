@@ -23,6 +23,9 @@ class DeviceStatus {
   final String sensorMode;
   final Map<String, dynamic>? recoveryRequired;
 
+  bool get isBusy =>
+      systemStatus.trim().toUpperCase().startsWith('DANG CHO AN');
+
   const DeviceStatus({
     required this.deviceId,
     required this.online,

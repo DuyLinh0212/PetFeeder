@@ -30,6 +30,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _feed() async {
     if (_submitting ||
         widget.status?.online != true ||
+        widget.status?.isBusy == true ||
         widget.status?.locked == true ||
         widget.status?.recoveryRequired != null) {
       return;
@@ -500,7 +501,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   PortionSelector(
                     value: selectedPortion,
                     max: maxPortion,
-                    onChanged: _submitting
+                    onChanged: _submitting || status?.isBusy == true
                         ? null
                         : (value) => setState(() => _portion = value),
                   ),
@@ -511,6 +512,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       key: const ValueKey('feed-now'),
                       onPressed:
                           !online ||
+                              status?.isBusy == true ||
                               status?.locked == true ||
                               recovery != null ||
                               _submitting ||
@@ -530,6 +532,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       label: Text(
                         _submitting
                             ? 'Đang gửi yêu cầu…'
+                            : status?.isBusy == true
+                            ? 'Đang tiếp tục phiên cấp…'
                             : status?.locked == true
                             ? 'Thiết bị đang phục hồi…'
                             : recovery != null

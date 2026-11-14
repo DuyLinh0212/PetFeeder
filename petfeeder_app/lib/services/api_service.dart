@@ -35,7 +35,7 @@ class ApiService {
     try {
       return await requestClient
           .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
-          .timeout(const Duration(seconds: 2));
+          .timeout(const Duration(seconds: 8));
     } finally {
       // Closing the request-scoped client aborts the socket when the timeout fires.
       if (_client == null) requestClient.close();
@@ -79,7 +79,6 @@ class ApiService {
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('main_api_base_url') ?? baseUrl;
-    await prefs.remove('pending_feed:$baseUrl');
   }
 
   Future<void> setBaseUrl(String url) async {
@@ -317,8 +316,35 @@ class ApiService {
 
   Future<Map<String, dynamic>> feedNow({required num portion}) async {
     final server = baseUrl;
+    final prefs = await SharedPreferences.getInstance();
+    final pendingKey = 'pending_feed:$server';
+    final pending = prefs.getString(pendingKey);
+    if (pending != null) {
+      try {
+        final decoded = jsonDecode(pending);
+        if (decoded is Map<String, dynamic>) {
+          return _resolvePendingFeed(
+            server: server,
+            prefs: prefs,
+            pendingKey: pendingKey,
+            command: Map<String, dynamic>.from(decoded),
+          );
+        }
+      } catch (_) {
+        throw const FeedRequestException(
+          'Có mã lệnh cho ăn đã lưu nhưng không đọc được. Kiểm tra trạng thái thiết bị trước khi xóa dữ liệu ứng dụng hoặc gửi lệnh mới.',
+          mayHaveBeenSent: true,
+        );
+      }
+      throw const FeedRequestException(
+        'Có lệnh cho ăn đã lưu nhưng thiếu mã tra cứu. Hãy kiểm tra trạng thái thiết bị trước khi gửi lệnh mới.',
+        mayHaveBeenSent: true,
+      );
+    }
+
     var stage = 'tạo mã yêu cầu';
     var submitted = false;
+    var submittedCommandId = '';
     try {
       final idResponse = await _get(
         Uri.parse('$server/api/id'),
@@ -337,29 +363,28 @@ class ApiService {
         throw const FormatException('Invalid command ID response');
       }
       final commandId = id['command_id'] as String;
+      submittedCommandId = commandId;
       final command = {
         'command_id': commandId,
         'created_at': id['now'],
         'expires_at': id['now'] + id['ttl_s'],
         'portion': portion,
       };
+      if (!await prefs.setString(pendingKey, jsonEncode(command))) {
+        throw const FeedRequestException(
+          'Không lưu được mã yêu cầu trên điện thoại nên chưa gửi lệnh cho ăn.',
+          mayHaveBeenSent: false,
+        );
+      }
 
       stage = 'gửi lệnh cho ăn';
       submitted = true;
-      final response = await _postFeed(
-        Uri.parse('$server/api/feeding/feed'),
-        body: jsonEncode(command),
+      return await _submitPendingFeed(
+        server: server,
+        prefs: prefs,
+        pendingKey: pendingKey,
+        command: command,
       );
-      final data = _feedBody(utf8.decode(response.bodyBytes));
-      if (data['success'] is! bool) {
-        throw const FormatException('Invalid feeding response');
-      }
-      return {
-        'success': response.statusCode == 200 && data['success'] == true,
-        'code': data['code'],
-        'message': data['message'] ?? 'Chờ xác nhận thiết bị',
-        'data': data['data'],
-      };
     } on FeedRequestException {
       rethrow;
     } catch (error) {
@@ -371,12 +396,190 @@ class ApiService {
           : error is FormatException
           ? 'Dữ liệu không hợp lệ khi $stage. Kiểm tra phiên bản app và backend.'
           : 'Không thể $stage.';
+      if (submitted) {
+        return _pendingFeedResult(
+          commandId: submittedCommandId,
+          message:
+              '$reason Đã lưu mã lệnh $submittedCommandId trên điện thoại; bấm lại để tra trạng thái trước khi gửi lệnh mới.',
+        );
+      }
       throw FeedRequestException(
-        '$reason ${submitted ? 'Lệnh có thể đã tới thiết bị. Ứng dụng không lưu lệnh chờ; hãy kiểm tra trạng thái thiết bị trước khi quyết định cấp tiếp.' : 'Chưa gửi lệnh cho ăn.'}',
-        mayHaveBeenSent: submitted,
+        '$reason Chưa gửi lệnh cho ăn.',
+        mayHaveBeenSent: false,
       );
     }
   }
+
+  Future<Map<String, dynamic>> _resolvePendingFeed({
+    required String server,
+    required SharedPreferences prefs,
+    required String pendingKey,
+    required Map<String, dynamic> command,
+  }) async {
+    final commandId = command['command_id'] as String? ?? '';
+    final status = await _getCommandStatus(server, commandId);
+    if (status != null) {
+      if (status['status'] == 'INTERRUPTED' &&
+          status['error_code'] == 'WEIGHT_DROP_DETECTED') {
+        try {
+          final device = await _getDeviceStatusJson(serverUrl: server);
+          final systemStatus = (device['system_status'] as String? ?? '')
+              .toUpperCase();
+          if (device['locked'] == true ||
+              systemStatus.contains('DANG CHO AN')) {
+            return _pendingFeedResult(
+              commandId: commandId,
+              message:
+                  'Thiết bị đang chờ cân ổn định hoặc tiếp tục phiên cấp cũ. Ứng dụng vẫn giữ mã lệnh; hãy kiểm tra lại trạng thái trước khi gửi bữa mới.',
+              data: status,
+            );
+          }
+        } catch (_) {
+          return _pendingFeedResult(
+            commandId: commandId,
+            message:
+                'Chưa xác nhận được thiết bị sau khi cân dao động. Ứng dụng vẫn giữ mã lệnh để tránh cấp trùng.',
+            data: status,
+          );
+        }
+      }
+      if (const {
+        'QUEUED',
+        'PUBLISHED',
+        'DELIVERY_UNKNOWN',
+      }.contains(status['status'])) {
+        return _submitPendingFeed(
+          server: server,
+          prefs: prefs,
+          pendingKey: pendingKey,
+          command: command,
+        );
+      }
+      final current = _commandResult(status);
+      if (!_isPendingCommand(status['status'])) await prefs.remove(pendingKey);
+      return current;
+    }
+
+    // The original POST may have reached the server while its response timed
+    // out. Reusing its ID is idempotent at both the API and device.
+    return _submitPendingFeed(
+      server: server,
+      prefs: prefs,
+      pendingKey: pendingKey,
+      command: command,
+    );
+  }
+
+  Future<Map<String, dynamic>> _submitPendingFeed({
+    required String server,
+    required SharedPreferences prefs,
+    required String pendingKey,
+    required Map<String, dynamic> command,
+  }) async {
+    final commandId = command['command_id'] as String? ?? '';
+    try {
+      final response = await _postFeed(
+        Uri.parse('$server/api/feeding/feed'),
+        body: jsonEncode(command),
+      );
+      final data = _feedBody(utf8.decode(response.bodyBytes));
+      if (data['success'] is! bool) {
+        throw const FormatException('Invalid feeding response');
+      }
+      final result = {
+        'success': response.statusCode == 200 && data['success'] == true,
+        'code': data['code'],
+        'message': data['message'] ?? 'Chờ xác nhận thiết bị',
+        'data': data['data'],
+      };
+      final row = data['data'];
+      final commandStatus = row is Map ? row['status'] : null;
+      if (!_isPendingCommand(commandStatus) &&
+          data['code'] != 'AWAITING_DEVICE_RESULT' &&
+          data['code'] != 'DELIVERY_UNKNOWN') {
+        await prefs.remove(pendingKey);
+      }
+      return result;
+    } catch (error) {
+      debugPrint('PetFeeder: chưa xác nhận được lệnh $commandId: $error');
+      final status = await _getCommandStatus(server, commandId);
+      if (status != null) {
+        final current = _commandResult(status);
+        if (!_isPendingCommand(status['status']))
+          await prefs.remove(pendingKey);
+        return current;
+      }
+      return _pendingFeedResult(
+        commandId: commandId,
+        message:
+            'Chưa nhận được xác nhận máy chủ. Đã giữ mã lệnh $commandId trên điện thoại; bấm lại để tra trạng thái, ứng dụng sẽ không tạo lệnh mới khi mã này còn chờ.',
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>?> _getCommandStatus(
+    String server,
+    String commandId,
+  ) async {
+    if (commandId.isEmpty) return null;
+    try {
+      final response = await _get(
+        Uri.parse('$server/api/commands/${Uri.encodeComponent(commandId)}'),
+      ).timeout(const Duration(seconds: 3));
+      if (response.statusCode != 200) return null;
+      final data = _feedBody(utf8.decode(response.bodyBytes));
+      final command = data['data'];
+      return command is Map<String, dynamic>
+          ? Map<String, dynamic>.from(command)
+          : null;
+    } catch (error) {
+      debugPrint('PetFeeder: tra cứu lệnh $commandId thất bại: $error');
+      return null;
+    }
+  }
+
+  bool _isPendingCommand(dynamic value) => const {
+    'QUEUED',
+    'PUBLISHED',
+    'ACCEPTED',
+    'DISPENSING',
+    'DELIVERY_UNKNOWN',
+  }.contains(value);
+
+  Map<String, dynamic> _commandResult(Map<String, dynamic> command) {
+    final status = command['status'] as String? ?? 'UNKNOWN';
+    final errorCode = command['error_code'] as String?;
+    if (_isPendingCommand(status)) {
+      return _pendingFeedResult(
+        commandId: command['command_id'] as String? ?? '',
+        message:
+            'Lệnh ${command['command_id']} đang ở trạng thái $status. Ứng dụng đã giữ mã lệnh; hãy kiểm tra lại trước khi yêu cầu bữa mới.',
+        data: command,
+      );
+    }
+    final success = status == 'SUCCESS';
+    return {
+      'success': success,
+      'code': errorCode ?? status,
+      'message': success
+          ? 'Thiết bị đã xác nhận cấp đủ khẩu phần.'
+          : errorCode == 'WEIGHT_DROP_DETECTED'
+          ? 'Cân dao động trong lúc cấp; thiết bị đang chờ ổn định hoặc kiểm tra an toàn.'
+          : 'Lệnh đã kết thúc với trạng thái $status${errorCode == null ? '' : ' ($errorCode)'}.',
+      'data': command,
+    };
+  }
+
+  Map<String, dynamic> _pendingFeedResult({
+    required String commandId,
+    required String message,
+    Map<String, dynamic>? data,
+  }) => {
+    'success': true,
+    'code': 'AWAITING_DEVICE_RESULT',
+    'message': message,
+    'data': data ?? {'command_id': commandId, 'status': 'DELIVERY_UNKNOWN'},
+  };
 
   Future<Map<String, dynamic>> retryInterruptedFeed({
     required String commandId,

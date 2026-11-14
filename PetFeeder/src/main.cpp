@@ -232,6 +232,7 @@ const char* errorVi(const char* code){
   if(!strcmp(code,"WEIGHT_UNSTABLE"))return "Cân chưa ổn định trong thời hạn cho phép";
   if(!strcmp(code,"MEASUREMENT_LOST"))return "Mất số đo cân trong phiên cấp";
   if(!strcmp(code,"POWER_RESTORED_AUTO_RESUME"))return "Có điện lại trong 1 giờ; tiếp tục phần còn thiếu";
+  if(!strcmp(code,"WEIGHT_DROP_AUTO_RESUME"))return "Cân ổn định; tự tiếp tục phần còn thiếu của phiên cũ";
   if(!strcmp(code,"POWER_OUTAGE_RETRY_REQUIRED"))return "Mất điện quá 1 giờ; mở ứng dụng để xác nhận cấp lại";
   if(!strcmp(code,"RECOVERY_SCALE_UNSTABLE"))return "Cân chưa ổn định sau khi khởi động; cần kiểm tra thủ công";
   if(!strcmp(code,"FEED_TIMEOUT"))return "Đã hết thời gian cấp tối đa";
@@ -600,10 +601,77 @@ void autoReconcileWeightDrop(unsigned long ms){
      state["lock_reason"]!="WEIGHT_DROP_DETECTED"||!weightOK||bowlMissing||
      !weightFilterReady()||weightWindowCount<WEIGHT_STABILITY_SAMPLES||
      ms-stableAt<AUTO_RECONCILE_STABLE_MS||!validTime())return;
+
+  static String reportedCommandId;
+  auto reportBlocked=[&](const String& commandId,const char* message){
+    if(reportedCommandId!=commandId){reportedCommandId=commandId;Serial.println(message);}
+  };
+  JsonObject interrupted;
+  JsonArray history=state["history"].as<JsonArray>();
+  for(int i=(int)history.size()-1;i>=0;i--){
+    JsonObject row=history[i].as<JsonObject>();
+    if(row["status"]=="INTERRUPTED"&&row["error_code"]=="WEIGHT_DROP_DETECTED"){
+      interrupted=row["command"].as<JsonObject>();break;
+    }
+  }
+  if(interrupted.isNull()){
+    reportBlocked("missing","[HX711] Cân ổn định nhưng không tìm thấy phiên cũ để tiếp tục; cần kiểm tra thủ công.");
+    return;
+  }
+  const String interruptedId=interrupted["command_id"].as<String>();
+  if(!ident(interrupted["command_id"])||
+     !numeric(interrupted["target_portion_g"],1,cf("max_portion_g"))||
+     !numeric(interrupted["baseline"],0,5000)){
+    reportBlocked(interruptedId,"[HX711] Cân ổn định nhưng dữ liệu phiên cũ không đủ tin cậy để tiếp tục; cần kiểm tra thủ công.");
+    return;
+  }
+
+  const int recoveryCount=numeric(interrupted["recovery_count"],0,100,true)
+      ?interrupted["recovery_count"].as<int>():0;
+  if(recoveryCount>=1){
+    reportBlocked(interruptedId,"[HX711] Cân đã ổn định nhưng phiên này đã tự tiếp tục một lần; cần kiểm tra thiết bị trước khi cấp tiếp.");
+    return;
+  }
+  if(state["events"].size()>MAX_EVENTS-6){
+    reportBlocked(interruptedId,"[HX711] Cân ổn định nhưng hàng đợi sự kiện gần đầy; giữ khóa an toàn để kiểm tra thủ công.");
+    return;
+  }
+
+  const float target=interrupted["target_portion_g"].as<float>();
+  const float baseline=interrupted["baseline"].as<float>();
+  const float tolerance=cf("tolerance_g");
+  const float actual=max(0.0f,weightG-baseline);
+  // A settled reading below the pre-feed bowl weight can mean the bowl was
+  // removed or food was taken. Keep the lock so we never top it up blindly.
+  if(weightG<baseline-tolerance){
+    reportBlocked(interruptedId,"[HX711] Cân ổn định nhưng khối lượng thấp hơn lúc bắt đầu; kiểm tra bát trước khi cấp tiếp.");
+    return;
+  }
+
+  JsonDocument resumed;resumed.set(interrupted);
+  state["active"].set(resumed);
+  state["active"]["recovery_count"]=recoveryCount+1;
+  state["active"]["started_at"]=nowSec();
   state["locked"]=false;state.remove("lock_reason");
   if(!persist())return;
-  event("RECONCILED","DAILY_RESERVATION_RETAINED");
-  Serial.println("[HX711] Cân ổn định 2 giây; đã tự mở khóa. Phiên cấp cũ không tự chạy lại.");
+  reportedCommandId="";
+  event("RECONCILED","WEIGHT_DROP_AUTO_RESUME");
+
+  const float remaining=max(0.0f,target-actual);
+  JsonDocument measured;measured.set(actual);
+  remember(state["active"],"DISPENSING",actual);
+  emit("DISPENSING",state["active"],measured.as<JsonVariantConst>(),"WEIGHT_DROP_AUTO_RESUME");
+  if(actual>target+tolerance){finish("OVER_PORTION","OVER_PORTION");}
+  else if(actual>=target-tolerance){finish("SUCCESS");}
+  else if(weightG+remaining>cf("bowl_capacity_g")){finish("PARTIAL","BOWL_FULL");}
+  else{
+    busy=true;feedAt=ms;servoAt=ms;pulseBaseline=weightG;
+    finePulse=remaining<=cf("coarse_fine_threshold_g");
+    uiStatus="DANG CAP";
+    if(!persist())return;
+    servo(true);toneNotice();
+    Serial.printf("[HX711] Cân ổn định 2 giây; tự tiếp tục phiên cũ, còn %.1f g.\n",remaining);
+  }
   syncTelemetryPending=true;
 }
 void setup(){

@@ -64,6 +64,24 @@ jobs:
           flutter-version: '3.38.7'
           cache: true
 
+      - name: Validate Firebase Android app config
+        working-directory: petfeeder_app
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("android/app/google-services.json").read_text())
+          package_names = [
+              client.get("client_info", {}).get("android_client_info", {}).get("package_name")
+              for client in config.get("client", [])
+          ]
+          expected = "com.example.petfeeder_app"
+          if expected not in package_names:
+              raise SystemExit(f"Firebase config has no Android client for {expected}")
+          print(f"Firebase Android config is present for {expected}")
+          PY
+
       - name: Install Flutter dependencies
         working-directory: petfeeder_app
         run: flutter pub get

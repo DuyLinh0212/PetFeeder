@@ -1,4 +1,6 @@
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
 import {cert, getApps, initializeApp} from 'firebase-admin/app';
 import {getMessaging} from 'firebase-admin/messaging';
 
@@ -6,12 +8,16 @@ const registrationId=(deviceId,installationId)=>createHash('sha256')
   .update(`${deviceId}:${installationId}`).digest('hex');
 
 export class PushNotificationService {
-  constructor(store,{serviceAccountJson=process.env.FIREBASE_SERVICE_ACCOUNT_JSON}={}) {
+  constructor(store,{
+    serviceAccountJson=process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+    serviceAccountFile=process.env.FIREBASE_SERVICE_ACCOUNT_FILE,
+  }={}) {
     this.store=store;
     this.messaging=null;
-    if(!serviceAccountJson)return;
+    if(!serviceAccountJson&&!serviceAccountFile)return;
     try {
-      const serviceAccount=JSON.parse(serviceAccountJson);
+      const serviceAccount=JSON.parse(serviceAccountJson||readFileSync(
+        resolve(process.cwd(),serviceAccountFile),'utf8'));
       const app=getApps().find(item=>item.name==='petfeeder-push')||initializeApp({
         credential:cert(serviceAccount),projectId:serviceAccount.project_id,
       },'petfeeder-push');

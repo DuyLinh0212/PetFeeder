@@ -25,17 +25,17 @@ File này giữ đúng 5 tình huống cần mô phỏng. Nút vật lý trên m
 
 ### **Kịch bản 2: Thú cưng làm rung bát khiến số cân dao động**
 
-- **Nguyên lý:** Firmware lọc số cân HX711 bằng trung bình trượt 5 mẫu (MA5), theo dõi biên độ dao động và chỉ xem cân ổn định lại sau khi các mẫu nằm trong ngưỡng ổn định.
+- **Nguyên lý:** Firmware lọc số cân HX711 bằng trung bình trượt 5 mẫu (MA5). Nếu phát hiện khối lượng giảm bất thường trong lúc cấp, servo dừng và giữ nguyên hạn mức cho phiên cũ. Khi cân ổn định liên tục 2 giây, firmware tự tiếp tục phần còn thiếu của phiên đó một lần.
 - **Các bước test trên Wokwi:**
   1. Chọn `sim manual`, đặt cân về mức ổn định và chờ Serial báo cân ổn định lúc khởi động.
   2. Bắt đầu cấp thức ăn.
   3. Trong lúc cấp, kéo HX711 lên xuống nhẹ vài lần để mô phỏng bát bị rung hoặc xê dịch.
-  4. Dừng thay đổi tải và chờ cân ổn định lại.
+  4. Dừng thay đổi tải; giữ số cân ở mức không thấp hơn khối lượng bát trước khi cấp và chờ ít nhất 2 giây sau khi cân ổn định.
 - **Kết quả:**
   - Serial báo `CẢNH BÁO CÂN DAO ĐỘNG` khi MA5 vượt ngưỡng.
-  - Khi cân hết rung, Serial báo `Cân ổn định trở lại`.
-  - Trong lúc số cân chưa ổn định, servo tạm dừng; khi cân ổn định, phiên cấp tiếp tục.
-- **Lưu ý:** Cảm biến chỉ nhận biết số cân dao động, không xác định được nguyên nhân là thú cưng rung bát hay tác động khác.
+  - Sau `WEIGHT_DROP_DETECTED`, cân ổn định đủ 2 giây sẽ có log `tự tiếp tục phiên cũ` và servo cấp phần còn thiếu, không tạo lệnh hoặc khẩu phần mới.
+  - Lệnh cho ăn mới trong lúc phiên cũ đang tiếp tục nhận `BUSY`, thay vì bị từ chối khóa an toàn.
+- **Lưu ý:** Nếu số cân ổn định thấp hơn mức trước khi cấp, cảm biến báo bát bị lấy ra, hoặc cùng phiên đã tự phục hồi một lần, thiết bị vẫn khóa để kiểm tra thủ công. Cảm biến không xác định được nguyên nhân làm cân giảm.
 
 ### **Kịch bản 3: Bát đầy thì không cho cấp thêm**
 

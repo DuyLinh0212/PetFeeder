@@ -53,12 +53,17 @@ export class FeedingService {
     const old=await this.store.get('commands',input.command_id);
     if(old){
       if(!sameCommand(old,input))throw new Invalid('COMMAND_ID_CONFLICT');
+      if(['QUEUED','PUBLISHED','DELIVERY_UNKNOWN'].includes(old.status)){
+        const sent=await this.transport.send('command',wireCommand(old));
+        if(sent!==false)await this.store.markCommandPublished?.(old.command_id);
+      }
       return old;
     }
     const cfg=await this.settings();
     const c=command(input,cfg,this.clock());
     const state=await this.state();
     let reason=state.connection==='OFFLINE'?'OFFLINE':null;
+    if(!reason&&state.connection==='BUSY')reason='BUSY';
     if(!reason&&state.device?.locked===true)reason='RECONCILIATION_REQUIRED';
     const [commandRows,legacyRows]=await Promise.all([
       this.store.all('commands'),this.store.all('legacy_history'),
@@ -120,7 +125,10 @@ export class FeedingService {
       if(!inserted)return {duplicate:true};
       if(e.command_id&&(terminal.has(e.status)||['ACCEPTED','DISPENSING'].includes(e.status))){
         const old=await this.store.get('commands',e.command_id);
-        if(!old||(!terminal.has(old.status)&&e.seq>(old.last_seq||0))){
+        const resumedAfterWeightDrop=old?.status==='INTERRUPTED'&&
+          old.error_code==='WEIGHT_DROP_DETECTED'&&e.seq>(old.last_seq||0)&&
+          ['DISPENSING','SUCCESS','PARTIAL','OVER_PORTION'].includes(e.status);
+        if(!old||((!terminal.has(old.status)||resumedAfterWeightDrop)&&e.seq>(old.last_seq||0))){
           await this.store.put('commands',e.command_id,{...old,...e,updated_at:this.clock(),last_seq:e.seq});
         }
       }

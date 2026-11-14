@@ -34,33 +34,43 @@ class NotificationService {
   FirebaseMessaging? _messaging;
   bool _initialized = false;
   bool _initializing = false;
+  bool _configured = false;
 
   bool get supportedPlatform =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
 
-  bool get configured =>
+  bool get _hasDartOptions =>
       _apiKey.isNotEmpty &&
       _appId.isNotEmpty &&
       _senderId.isNotEmpty &&
       _projectId.isNotEmpty;
 
+  bool get configured => _configured;
+
   Future<void> initialize() async {
-    if (_initialized || _initializing || !supportedPlatform || !configured) {
+    if (_initialized || _initializing || !supportedPlatform) {
       return;
     }
     _initializing = true;
     try {
       if (Firebase.apps.isEmpty) {
-        await Firebase.initializeApp(
-          options: const FirebaseOptions(
-            apiKey: _apiKey,
-            appId: _appId,
-            messagingSenderId: _senderId,
-            projectId: _projectId,
-          ),
-        );
+        if (_hasDartOptions) {
+          await Firebase.initializeApp(
+            options: const FirebaseOptions(
+              apiKey: _apiKey,
+              appId: _appId,
+              messagingSenderId: _senderId,
+              projectId: _projectId,
+            ),
+          );
+        } else if (defaultTargetPlatform == TargetPlatform.android) {
+          // Android reads the app options generated from google-services.json.
+          await Firebase.initializeApp();
+        } else {
+          return;
+        }
       }
 
       _messaging = FirebaseMessaging.instance;
@@ -106,6 +116,7 @@ class NotificationService {
         }
       });
       _initialized = true;
+      _configured = true;
 
       final prefs = await SharedPreferences.getInstance();
       if (prefs.getBool(_enabledKey) == true) {
