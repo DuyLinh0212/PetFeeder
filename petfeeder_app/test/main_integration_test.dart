@@ -13,7 +13,7 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test(
-    'network failure does not pin the next feed request to an old command',
+    'lost response persists the pending command across app restarts',
     () async {
       final payloads = <Map<String, dynamic>>[];
       var ids = 0;
@@ -47,17 +47,16 @@ void main() {
         throw StateError('Unexpected ${req.url}');
       });
       final first = ApiService.testing(client, baseUrl: 'http://test');
-      await expectLater(
-        first.feedNow(portion: 20),
-        throwsA(isA<FeedRequestException>()),
-      );
+      final uncertain = await first.feedNow(portion: 20);
+      expect(uncertain['code'], 'AWAITING_DEVICE_RESULT');
       final reopened = ApiService.testing(client, baseUrl: 'http://test');
       await reopened.feedNow(portion: 80);
       expect(payloads.length, 2);
       expect(payloads[0]['command_id'], 'fresh-id-1');
-      expect(payloads[1]['command_id'], 'fresh-id-2');
+      expect(payloads[1]['command_id'], 'fresh-id-1');
       expect(payloads[0]['portion'], 20);
-      expect(payloads[1]['portion'], 80);
+      expect(payloads[1]['portion'], 20);
+      expect(ids, 1);
     },
   );
 
@@ -69,7 +68,7 @@ void main() {
     expect(device.bowlWeightG, isNull);
   });
 
-  test('lost feed response leaves no saved lock or same-ID lookup', () async {
+  test('lost feed response saves and looks up the same command ID', () async {
     var sends = 0;
     var ids = 0;
     var lookups = 0;
@@ -93,23 +92,19 @@ void main() {
       throw StateError('Unexpected ${req.url}');
     });
     final api = ApiService.testing(client, baseUrl: 'http://test');
-    await expectLater(
-      api.feedNow(portion: 30),
-      throwsA(
-        isA<FeedRequestException>()
-            .having((e) => e.mayHaveBeenSent, 'may have been sent', true)
-            .having(
-              (e) => e.message,
-              'message',
-              contains('không lưu lệnh chờ'),
-            ),
-      ),
-    );
+    final result = await api.feedNow(portion: 30);
+    expect(result['success'], true);
+    expect(result['code'], 'AWAITING_DEVICE_RESULT');
+    expect(result['message'], contains('Đã giữ mã lệnh received-id-1'));
     expect(sends, 1);
     expect(ids, 1);
-    expect(lookups, 0);
+    expect(lookups, 1);
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString('pending_feed:http://test'), isNull);
+    final pending =
+        jsonDecode(prefs.getString('pending_feed:http://test')!)
+            as Map<String, dynamic>;
+    expect(pending['command_id'], 'received-id-1');
+    expect(pending['portion'], 30);
   });
 
   test(
@@ -139,7 +134,7 @@ void main() {
   );
 
   test(
-    'unconfirmed submission reports uncertainty without saving a retry payload',
+    'unconfirmed submission reports uncertainty and saves the retry payload',
     () async {
       final client = MockClient((req) async {
         if (req.url.path == '/api/id') {
@@ -155,16 +150,14 @@ void main() {
         throw http.ClientException('Connection reset');
       });
       final api = ApiService.testing(client, baseUrl: 'http://test');
-      await expectLater(
-        api.feedNow(portion: 30),
-        throwsA(
-          isA<FeedRequestException>()
-              .having((e) => e.mayHaveBeenSent, 'may have been sent', true)
-              .having((e) => e.message, 'message', contains('không lưu lệnh chờ')),
-        ),
-      );
+      final result = await api.feedNow(portion: 30);
+      expect(result['success'], true);
+      expect(result['code'], 'AWAITING_DEVICE_RESULT');
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getString('pending_feed:http://test'), isNull);
+      final pending =
+          jsonDecode(prefs.getString('pending_feed:http://test')!)
+              as Map<String, dynamic>;
+      expect(pending['command_id'], 'unconfirmed-id');
     },
   );
 
@@ -225,7 +218,7 @@ void main() {
   );
 
   test(
-    'a new feed action creates a new command after an uncertain response',
+    'a later feed action retries the same uncertain command instead of duplicating',
     () async {
       var sends = 0;
       var ids = 0;
@@ -253,46 +246,41 @@ void main() {
         throw StateError('Unexpected ${req.url}');
       });
       final api = ApiService.testing(client, baseUrl: 'http://test');
-      await expectLater(
-        api.feedNow(portion: 20),
-        throwsA(isA<FeedRequestException>()),
-      );
-      await expectLater(
-        api.feedNow(portion: 80),
-        throwsA(isA<FeedRequestException>()),
-      );
+      final first = await api.feedNow(portion: 20);
+      final second = await api.feedNow(portion: 80);
+      expect(first['code'], 'AWAITING_DEVICE_RESULT');
+      expect(second['code'], 'AWAITING_DEVICE_RESULT');
       expect(sends, 2);
-      expect(ids, 2);
-      expect(submittedIds, ['uncertain-id-1', 'uncertain-id-2']);
+      expect(ids, 1);
+      expect(submittedIds, ['uncertain-id-1', 'uncertain-id-1']);
     },
   );
 
-  testWidgets(
-    'online missing bowl and hopper measurements remain unknown',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: DashboardScreen(
-              status: DeviceStatus.fromJson({
-                'online': true,
-                'food_level_percent': null,
-                'bowl_weight_g': null,
-              }),
-              isLoading: false,
-              onRefresh: () async {},
-            ),
+  testWidgets('online missing bowl and hopper measurements remain unknown', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DashboardScreen(
+            status: DeviceStatus.fromJson({
+              'online': true,
+              'food_level_percent': null,
+              'bowl_weight_g': null,
+            }),
+            isLoading: false,
+            onRefresh: () async {},
           ),
         ),
-      );
-      expect(find.text('—'), findsNWidgets(2));
-      expect(find.text('Cần thêm hạt'), findsNothing);
-      expect(find.text('0.0 g'), findsNothing);
-      expect(tester.takeException(), isNull);
-    },
-  );
+      ),
+    );
+    expect(find.text('—'), findsNWidgets(2));
+    expect(find.text('Cần thêm hạt'), findsNothing);
+    expect(find.text('0.0 g'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'Main dashboard disables a new feed when backend/device is offline',
