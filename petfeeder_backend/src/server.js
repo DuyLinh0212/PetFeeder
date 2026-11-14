@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const http = require('node:http');
 const path = require('node:path');
+const {performance} = require('node:perf_hooks');
 const {WebSocketServer,WebSocket} = require('ws');
 const config = require('./config');
 
@@ -9,7 +10,14 @@ async function startServer() {
   const {createBackend} = await import('./app.mjs');
   const integration=await createBackend({brokerUrl:config.mqtt.brokerUrl,databaseUrl:process.env.DATABASE_URL,
     prefix:process.env.MQTT_TOPIC_PREFIX||'duylinh0212/petfeeder/v1'});
-  const app=express();app.use(cors());app.use(express.json({limit:'32kb'}));
+  const app=express();
+  app.use((req,res,next)=>{
+    if(req.path!=='/api'&&!req.path.startsWith('/api/'))return next();
+    const startedAt=performance.now();
+    res.once('finish',()=>console.log(`[API] ${req.method} ${req.path} ${res.statusCode} ${Math.round(performance.now()-startedAt)}ms`));
+    next();
+  });
+  app.use(cors());app.use(express.json({limit:'32kb'}));
   app.use('/api',integration.router);
   app.get('/health',async(req,res)=>{
     try {

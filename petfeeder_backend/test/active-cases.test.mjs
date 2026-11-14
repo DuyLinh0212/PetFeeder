@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Storage} from '../src/storage/database.mjs';
+import {MemoryStorage} from './helpers/memoryStorage.mjs';
 import {FeedingService} from '../src/services/feedingService.mjs';
 import {DeviceSimulator} from './helpers/deviceSimulator.mjs';
 
 async function fixture(t){
   let now=Date.parse('2026-10-19T00:00:00Z')/1000,device,next=0;
-  const backend=new Storage(),deviceStore=new Storage();let pending=Promise.resolve();
+  const backend=new MemoryStorage(),deviceStore=new MemoryStorage();let pending=Promise.resolve();
   const service=new FeedingService(backend,{mode:'TEST',send(kind,payload){
     if(!device?.online)return false;
     if(kind==='sync')device.sync(payload);

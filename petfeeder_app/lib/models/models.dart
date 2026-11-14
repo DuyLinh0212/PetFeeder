@@ -104,6 +104,12 @@ class FeedingRecord {
   });
 
   factory FeedingRecord.fromJson(Map<String, dynamic> json) {
+    double? readNumber(dynamic value) {
+      if (value is num) return value.toDouble();
+      if (value is String) return double.tryParse(value.trim());
+      return null;
+    }
+
     DateTime? readDate(dynamic value) {
       if (value is num) {
         return DateTime.fromMillisecondsSinceEpoch(value.toInt() * 1000);
@@ -121,8 +127,8 @@ class FeedingRecord {
     return FeedingRecord(
       commandId: json['command_id'] as String? ?? '',
       source: json['source'] as String? ?? 'APP',
-      targetPortionG: (json['target_portion_g'] as num?)?.toDouble(),
-      actualWeightG: (json['actual_weight_g'] as num?)?.toDouble(),
+      targetPortionG: readNumber(json['target_portion_g']),
+      actualWeightG: readNumber(json['actual_weight_g']),
       status: json['status'] as String? ?? 'UNKNOWN',
       errorCode: json['error_code'] as String?,
       occurredAt: readDate(json['occurred_at']),

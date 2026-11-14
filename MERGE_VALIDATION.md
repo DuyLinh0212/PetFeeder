@@ -6,7 +6,7 @@ Merge giữ lịch sử; nhánh mobile đã chứa các commit firmware. Tài li
 ## Quyết định tích hợp
 
 - Giữ giao diện mobile, trạng thái tab, kiểm tra địa chỉ và timeout. Thanh dưới có ba mục chính; Cài đặt mở từ biểu tượng bánh răng. Ghép lưu kết nối, mã lệnh bền vững và cấu hình an toàn của Long.
-- Giữ bộ điều khiển không chặn, LittleFS, SQLite, lịch offline, outbox/ACK, chống lặp và thời hạn lệnh của Long. Ghép cấp thô/tinh, sức chứa bát, giới hạn số lần/ngày và nhịp cấp, chống kẹt, theo dõi biến động bát của firmware.
+- Giữ bộ điều khiển không chặn, LittleFS, PostgreSQL, lịch offline, outbox/ACK, chống lặp và thời hạn lệnh của Long. Ghép cấp thô/tinh, sức chứa bát, giới hạn số lần/ngày và nhịp cấp, chống kẹt, theo dõi biến động bát của firmware.
 - Theo C03/C05: khoảng chờ bảo vệ bắt buộc, mặc định 180s; `override:true` bị từ chối, không có nút ép cấp. Không bỏ qua lỗi cảm biến, khóa cấp hoặc hạn mức.
 - Khẩu phần là lượng cấp thêm; không âm thầm cộng đủ khẩu phần khi vượt sức chứa bát. Cấp bù có xác nhận, chỉ phần còn thiếu đã biết, ID mới và `retry_of`; gửi lại qua mạng giữ nguyên ID/payload cũ.
 - Mặc định: tối đa 100g/yêu cầu (có thể cấu hình), bát 150g, 200g/ngày, 6 phiên/ngày, 15 nhịp/phiên, ngưỡng chuyển nhịp tinh 10g, 3 lần chống kẹt. API, mô hình và ESP32 dùng cùng cấu hình; tối đa 10 lịch.
@@ -69,7 +69,7 @@ CI Ubuntu lần đầu phát hiện SDK không có Roboto mà cache Windows cũ 
 | N23 | Giữ cửa sổ trễ 60s, đối soát tối đa 7 ngày; MISSED_SCHEDULE, không cấp dồn; test lịch quá hạn | Hiện giữ các cửa sổ của Long; chưa có giao diện chỉnh hai giá trị này |
 | N24 | App lưu ID/payload trước gửi; restart/retry cùng ID không tạo phiên mới, body khác bị chặn; test API/Flutter | Không tự gửi lại lệnh chưa rõ kết quả khi nhấn tạo bữa mới |
 | N25 | API và ESP32 kiểm tra hạn; lệnh cũ mới đến không chạy; test hết hạn | Replay ID đã hoàn tất chỉ trả kết quả cũ |
-| N26 | event_id duy nhất, ACK sau commit, bỏ retained, giữ trạng thái cuối; test MQTT/SQLite restart | Chưa thử broker mất điện thật |
+| N26 | event_id duy nhất, ACK sau commit, bỏ retained, giữ trạng thái cuối; test MQTT/restart | Chưa thử broker mất điện thật |
 | N27 | MQTT/heartbeat tiếp tục trong phiên và chống kẹt; BUSY khác OFFLINE; test heartbeat dài | Chưa đo độ trễ trên mạng/mạch thật |
 | N28 | Kiểm tra kiểu/miền dữ liệu ở API và firmware; không âm thầm cấp bằng mặc định; test dữ liệu sai | Firmware đã build, chưa fuzz trực tiếp trên ESP32 |
 

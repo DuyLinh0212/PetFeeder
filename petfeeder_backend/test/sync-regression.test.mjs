@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Storage} from '../src/storage/database.mjs';
+import {MemoryStorage} from './helpers/memoryStorage.mjs';
 import {FeedingService} from '../src/services/feedingService.mjs';
 
 function fixture(t){
-  const store=new Storage(),sent=[];
+  const store=new MemoryStorage(),sent=[];
   let now=1792500000,available=true;
   const service=new FeedingService(store,{mode:'TEST',send(kind,body){sent.push({kind,body});return available;}},()=>now);
   t.after(()=>store.close());

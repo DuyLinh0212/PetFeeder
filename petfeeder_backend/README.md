@@ -39,6 +39,6 @@ Prefix mặc định `duylinh0212/petfeeder/v1`; cấu hình cùng prefix ở ba
 | `/events` | ESP32 → Backend | `event_id`, `seq`, thời gian, trạng thái và lượng thực cấp |
 | `/ack` | Backend → ESP32 | `event_id` sau khi PostgreSQL đã ghi sự kiện |
 
-Lịch và sự kiện dùng hàng đợi bền vững phía ESP32; backend loại sự kiện trùng theo `event_id` và lưu dữ liệu vận hành trong PostgreSQL qua `DATABASE_URL`. `backend.sqlite` không được dùng khi backend chạy bình thường. Script `npm run migrate:sqlite` chỉ đọc một bản SQLite cũ nếu bạn chủ động cần nhập dữ liệu sang PostgreSQL; chế độ test cũng dùng SQLite riêng. Lần chạy đầu có thể nhập lịch sử cũ từ `data/database.json` để giữ dữ liệu cần cho hạn mức; tệp JSON gốc không bị sửa.
+Lịch và sự kiện dùng hàng đợi bền vững phía ESP32; backend loại sự kiện trùng theo `event_id` và lưu dữ liệu vận hành trong PostgreSQL qua `DATABASE_URL`. Runtime không ghi database ra file cục bộ. Khi khởi chạy lần đầu, backend có thể đọc `data/database.json` để nhập lịch sử cũ; tệp JSON gốc không bị sửa.
 
 Các phần chính: `src/domain/feedingPolicy.mjs` kiểm tra cấu hình/lệnh/lịch; `src/services/feedingService.mjs` áp dụng giới hạn và đồng bộ; `src/routes/index.mjs` cung cấp API; `src/storage/` lưu trạng thái.

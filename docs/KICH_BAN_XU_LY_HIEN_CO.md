@@ -6,6 +6,7 @@ File này giữ đúng 5 tình huống cần mô phỏng. Nút vật lý trên m
 
 - Mở Serial Monitor ở 115200 baud và chờ ESP32 kết nối.
 - Gõ `status` để xem trạng thái thiết bị.
+- Gõ `dump state` để in JSON đang lưu trong NVS của ESP32 mô phỏng.
 - Gõ `sim manual` để tự chỉnh cân HX711; giá trị `0.14` tương ứng khoảng 140 g.
 - Đặt bát rỗng lên cân và gõ `tare EMPTY` trước khi thử các tình huống liên quan đến cân.
 - Khi thử lệnh từ App, backend và firmware cần dùng cùng MQTT topic prefix.
@@ -49,16 +50,18 @@ File này giữ đúng 5 tình huống cần mô phỏng. Nút vật lý trên m
 
 ### **Kịch bản 4: Mất mạng, dùng lịch offline để cấp đúng giờ**
 
-- **Nguyên lý:** ESP32 vẫn có điện và lịch đã được lưu trong NVS trước khi mất mạng. Vì vậy thiết bị tự kiểm tra giờ và chạy lịch tại chỗ; sự kiện cho ăn được giữ lại để đồng bộ khi mạng trở lại.
-- **Các bước test trên Wokwi hoặc thiết bị:**
-  1. Tạo lịch ăn sắp đến giờ và chờ thiết bị nhận lịch, xác nhận Serial có `CONFIG_APPLIED`.
-  2. Ngắt Wi-Fi hoặc MQTT nhưng giữ ESP32 đang bật; không nhấn reset.
-  3. Chờ đến giờ ăn trong lịch.
-  4. Nối mạng lại và kiểm tra lịch sử trên App/backend.
+- **Nguyên lý:** ESP32 lưu lịch và hàng đợi sự kiện trong NVS. Khi mất kết nối MQTT, lịch vẫn chạy theo đồng hồ đã đồng bộ; sự kiện nằm trong hàng đợi trên ESP32 cho tới khi MQTT kết nối lại. PostgreSQL chỉ nhận dữ liệu sau khi sự kiện được đồng bộ.
+- **Các bước test trên Wokwi:**
+  1. Gõ `sim auto` trong Serial Monitor để dùng cân giả lập.
+  2. Tạo lịch ăn sắp đến giờ từ App; chờ Serial báo `CONFIG_APPLIED` trước khi tiếp tục.
+  3. Trước giờ ăn, gõ `sim offline`. Lệnh ngắt MQTT nhưng giữ ESP32 bật, giữ Wi-Fi/đồng hồ và không nhấn reset.
+  4. Chờ lịch chạy; Serial sẽ ghi nhận phiên cấp trong lúc MQTT đang ngắt.
+  5. Gõ `sim online`, chờ MQTT kết nối lại rồi kiểm tra lịch sử trên App/backend.
 - **Kết quả:**
-  - Thiết bị dùng lịch đã lưu để cấp thức ăn dù App/backend đang mất kết nối.
+  - ESP32 dùng lịch đã lưu để cấp thức ăn khi MQTT giữa ESP32 và backend bị ngắt; App/backend vẫn có thể chạy.
   - Sự kiện được gửi lên sau khi mạng trở lại, không tạo lịch sử trùng.
   - Lịch trễ từ 60 giây trở lên bị bỏ qua, không cấp dồn.
+- **Lưu ý:** Giữ tốc độ Wokwi ở 100% và không dừng/chạy lại mô phỏng giữa hai lệnh; NVS là bộ nhớ flash của ESP32 mô phỏng, độc lập với PostgreSQL backend.
 
 ### **Kịch bản 5: Mất điện giữa phiên cấp đang chạy**
 

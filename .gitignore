@@ -43,4 +43,6 @@ PetFeeder/include/secrets.h
 work/
 **/local.properties
 **/*.db*
-**/*.sqlite*
+
+# Firebase service account keys
+/petfeeder-iot-20261108-duytn-*.json

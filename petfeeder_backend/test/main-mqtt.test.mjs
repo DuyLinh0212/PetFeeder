@@ -2,12 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {join} from 'node:path';
-import {tmpdir} from 'node:os';
 import {Aedes} from 'aedes';
 import mqtt from 'mqtt';
 import {createBackend} from '../src/app.mjs';
+import {MemoryStorage} from './helpers/memoryStorage.mjs';
 
 const waitFor=async fn=>{
   for(let n=0;n<150;n++){if(await fn())return;await new Promise(resolve=>setTimeout(resolve,20));}
@@ -18,7 +16,7 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
   const broker=await Aedes.createBroker();
   const tcp=createServer(broker.handle);tcp.listen(0,'127.0.0.1');await once(tcp,'listening');
   const url=`mqtt://127.0.0.1:${tcp.address().port}`,prefix='test/petfeeder/main';
-  const dataDir=mkdtempSync(join(tmpdir(),'petfeeder-main-mqtt-'));
+  const store=new MemoryStorage();
   const device=mqtt.connect(url,{reconnectPeriod:0});await once(device,'connect');
   let integration;const received=[],acks=[];
   device.on('message',(topic,body)=>{
@@ -28,7 +26,7 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
   await new Promise((resolve,reject)=>device.subscribe([`${prefix}/command`,`${prefix}/sync`,`${prefix}/ack`],{qos:1},error=>error?reject(error):resolve()));
   const publish=(topic,body,retain=false)=>new Promise((resolve,reject)=>device.publish(`${prefix}/${topic}`,JSON.stringify(body),{qos:1,retain},error=>error?reject(error):resolve()));
   try{
-    integration=await createBackend({dataDir,brokerUrl:url,prefix});
+    integration=await createBackend({storage:store,legacyFile:null,brokerUrl:url,prefix});
     await waitFor(()=>integration.connected());
     const now=Math.floor(Date.now()/1000);
     await publish('telemetry',{occurred_at:now,busy:false,weight_g:0,device_id:'petfeeder_01',sensor_mode:'HX711_MANUAL'});
@@ -47,7 +45,7 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
     await integration.close();integration=null;
     await new Promise(resolve=>setTimeout(resolve,100));
     await publish('events',{...e,event_id:'retained-replay',command_id:'retained-session'},true);
-    integration=await createBackend({dataDir,brokerUrl:url,prefix});
+    integration=await createBackend({storage:store,legacyFile:null,brokerUrl:url,prefix});
     await waitFor(()=>integration.connected());
     await new Promise(resolve=>setTimeout(resolve,100));
     assert.equal(integration.db.get('events','retained-replay'),null);
@@ -58,7 +56,6 @@ test('Main MQTT prefix: command reaches device, ack follows durable dedup, resta
     if(integration)await integration.close();
     await new Promise(resolve=>device.end(true,resolve));
     await new Promise(resolve=>broker.close(resolve));await new Promise(resolve=>tcp.close(resolve));
-    rmSync(dataDir,{recursive:true,force:true});
   }
 });
 
@@ -66,13 +63,13 @@ test('Backends in separate namespaces on one broker keep independent MQTT connec
   const broker=await Aedes.createBroker(),tcp=createServer(broker.handle);
   tcp.listen(0,'127.0.0.1');await once(tcp,'listening');
   const url=`mqtt://127.0.0.1:${tcp.address().port}`;
-  const dirs=[mkdtempSync(join(tmpdir(),'petfeeder-sync-a-')),mkdtempSync(join(tmpdir(),'petfeeder-sync-b-'))];
+  const stores=[new MemoryStorage(),new MemoryStorage()];
   const observer=mqtt.connect(url,{reconnectPeriod:0});await once(observer,'connect');
   const backends=[];
   try{
-    backends.push(await createBackend({dataDir:dirs[0],brokerUrl:url,prefix:'test/sync/a'}));
+    backends.push(await createBackend({storage:stores[0],legacyFile:null,brokerUrl:url,prefix:'test/sync/a'}));
     await waitFor(()=>backends[0].connected());
-    backends.push(await createBackend({dataDir:dirs[1],brokerUrl:url,prefix:'test/sync/b'}));
+    backends.push(await createBackend({storage:stores[1],legacyFile:null,brokerUrl:url,prefix:'test/sync/b'}));
     await waitFor(()=>backends[1].connected());
     const version=(await backends[0].service.syncPayload()).version;
     await new Promise((resolve,reject)=>observer.publish('test/sync/a/telemetry',JSON.stringify({
@@ -86,6 +83,5 @@ test('Backends in separate namespaces on one broker keep independent MQTT connec
     await Promise.all(backends.map(backend=>backend.close()));
     await new Promise(resolve=>observer.end(true,resolve));
     await new Promise(resolve=>broker.close(resolve));await new Promise(resolve=>tcp.close(resolve));
-    dirs.forEach(dir=>rmSync(dir,{recursive:true,force:true}));
   }
 });

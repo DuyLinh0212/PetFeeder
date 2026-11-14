@@ -29,6 +29,9 @@ constexpr float TANK_HEIGHT_CM=25.0f, HOPPER_CAPACITY_G=500.0f;
 constexpr int GREEN_PIN=2, RED_PIN=15, BUZZER_PIN=14;
 Adafruit_SSD1306 display(128,64,&Wire,-1);
 bool oledOK=false,simAuto=false;
+#if WOKWI_SIM
+bool simMqttOffline=false;
+#endif
 float pulseBaseline=0;
 unsigned long displayAt=0,buzzUntil=0;
 bool finePulse=false,bowlMissing=false,weightDropped=false;
@@ -36,6 +39,7 @@ String uiStatus="KHOI DONG";
 void toneNotice(unsigned long duration=100){digitalWrite(BUZZER_PIN,HIGH);buzzUntil=millis()+duration;}
 void servoAngle(int angle){ledcWrite(0,(uint32_t)((500+angle*2000/180)*65535UL/20000));}
 constexpr size_t MAX_EVENTS=96, MAX_HISTORY=32;
+constexpr unsigned long AUTO_RECONCILE_STABLE_MS=2000;
 WiFiClient wifiClient;
 MQTTClient mqtt(4096);
 HX711 scale;
@@ -203,7 +207,7 @@ const char* statusVi(const char* status){
   if(!strcmp(status,"BOWL_MISSING"))return "Không phát hiện bát trên cân";
   if(!strcmp(status,"INTERRUPTED"))return "Phiên cấp bị gián đoạn";
   if(!strcmp(status,"MISSED_SCHEDULE"))return "Đã bỏ lỡ lịch cho ăn";
-  if(!strcmp(status,"RECONCILED"))return "Đã xác nhận kiểm tra thiết bị";
+  if(!strcmp(status,"RECONCILED"))return "Đã gỡ khóa an toàn";
   return "Thiết bị ghi nhận sự kiện";
 }
 const char* errorVi(const char* code){
@@ -290,7 +294,7 @@ void remember(JsonVariantConst command,const char* status,float actual,bool know
     if(h.size()>=MAX_HISTORY){
       int expired=-1;
       for(size_t i=0;i<h.size();i++)if(validTime()&&h[i]["command"]["expires_at"].as<long>()<=nowSec()){expired=(int)i;break;}
-      if(expired<0){servo(false);state["locked"]=true;persist();return;}
+      if(expired<0){servo(false);state["locked"]=true;state["lock_reason"]="HISTORY_FULL";persist();return;}
       h.remove(expired);
     }
     row=h.add<JsonObject>();
@@ -309,7 +313,8 @@ void finish(const char* status,const char* error=nullptr,bool known=true){
   servo(false);uiStatus=status;toneNotice();JsonDocument copy;copy.set(state["active"]);auto a=copy.as<JsonObject>();
   float actual=max(0.0f,weightG-a["baseline"].as<float>());
   if(known)state["used_g"]=max(0.0f,state["used_g"].as<float>()-a["target_portion_g"].as<float>()+actual);
-  else state["locked"]=true;
+  else{state["locked"]=true;state["lock_reason"]=error?error:status;}
+  if(known)state.remove("lock_reason");
   state["active"]=nullptr;busy=false;state["last_end"]=validTime()?nowSec():state["last_end"].as<long>();
   result(a,status,actual,error,known);
 }
@@ -483,7 +488,7 @@ void processPowerRecovery(){
   if(!weightOK||!weightFilterReady()||millis()-stableAt<700){
     if(millis()-recoveryPendingSince<waitLimit)return;
     JsonDocument interrupted;interrupted.set(state["active"]);
-    state["active"]=nullptr;state["locked"]=true;state["last_end"]=nowSec();
+    state["active"]=nullptr;state["locked"]=true;state["lock_reason"]="RECOVERY_SCALE_UNSTABLE";state["last_end"]=nowSec();
     recoveryPending=false;clearRecoveryMarkers();uiStatus="RECOVERY_SCALE_UNSTABLE";
     result(interrupted.as<JsonVariantConst>(),"INTERRUPTED",0,"RECOVERY_SCALE_UNSTABLE",false);
     syncTelemetryPending=true;if(mqtt.connected())heartbeat();
@@ -505,6 +510,7 @@ void processPowerRecovery(){
 
   if(actual>target+tolerance||actual>=target-tolerance){
     state["active"]=nullptr;state["locked"]=false;state["last_end"]=nowSec();
+    state.remove("lock_reason");
     state["used_g"]=max(0.0f,state["used_g"].as<float>()-target+actual);
     recoveryPending=false;clearRecoveryMarkers();
     const bool over=actual>target+tolerance;
@@ -529,6 +535,7 @@ void processPowerRecovery(){
   const bool waitForUser=elapsed>3600||!bowlHasRoom;
   if(waitForUser){
     state["active"]=nullptr;state["locked"]=false;
+    state.remove("lock_reason");
     state["last_end"]=startedAt>0?startedAt:nowSec()-3601;
     state["used_g"]=max(0.0f,state["used_g"].as<float>()-target+actual);
     recoveryPending=false;clearRecoveryMarkers();uiStatus="POWER_OUTAGE_RETRY_REQUIRED";
@@ -539,7 +546,7 @@ void processPowerRecovery(){
 
   // Continue the original session from the measured bowl weight. Preserve its
   // baseline so finish() accounts for the full amount across both attempts.
-  state["locked"]=false;state["active"]["started_at"]=nowSec();
+  state["locked"]=false;state.remove("lock_reason");state["active"]["started_at"]=nowSec();
   state["active"]["recovery_count"]=state["active"]["recovery_count"].as<int>()+1;
   clearRecoveryMarkers();
   if(!persist())return;
@@ -553,6 +560,24 @@ void processPowerRecovery(){
 void serialCommand(String line){
   line.trim();
 #if WOKWI_SIM
+  if(line=="dump state"){
+    if(!nvsReady){Serial.println("NVS chưa mở được.");return;}
+    const String savedState=nvs.getString("state","");
+    if(savedState.length())Serial.println(savedState);
+    else Serial.println("NVS chưa có key state.");
+    return;
+  }
+  if(line=="sim offline"){
+    simMqttOffline=true;
+    if(mqtt.connected())mqtt.disconnect();
+    Serial.println("Wokwi: đã ngắt MQTT giả lập; ESP32 vẫn chạy và giữ lịch/sự kiện trong NVS.");
+    return;
+  }
+  if(line=="sim online"){
+    simMqttOffline=false;connectAt=millis()-3000UL;
+    Serial.println("Wokwi: đã bật lại MQTT; đang kết nối để đồng bộ lịch và sự kiện.");
+    return;
+  }
   if((line=="sim auto"||line=="sim manual")&&!busy){simAuto=line=="sim auto";state["sim_auto"]=simAuto;persist();Serial.println(simAuto?"MÔ PHỎNG HX711: cân tăng theo nhịp servo; đây không phải lượng đo thật.":"CẢM BIẾN THẬT: dùng HX711/Wokwi để thay đổi số cân.");return;}
   if(line.startsWith("sim powerloss ")&&busy){
     const long seconds=line.substring(14).toInt();
@@ -566,9 +591,20 @@ void serialCommand(String line){
   else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("ĐÃ CÂN CHỈNH: đã lưu mức cân khi bát rỗng.");}
   else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Hãy đặt bát rỗng rồi nhập tare EMPTY để cân chỉnh.");}}
   else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
-    state["locked"]=false;state["last_end"]=nowSec();persist();event("RECONCILED","DAILY_RESERVATION_RETAINED");}
+    state["locked"]=false;state.remove("lock_reason");state["last_end"]=nowSec();persist();event("RECONCILED","DAILY_RESERVATION_RETAINED");}
   else if(line.startsWith("{")){JsonDocument d;if(!deserializeJson(d,line))receive(d.as<JsonVariantConst>());else event("REJECTED","INVALID_JSON");}
-  else Serial.println("Lệnh: status | sim auto | sim manual | sim powerloss GIÂY | tare EMPTY | factor N | reconcile CHECKED | hoặc dán lệnh JSON");
+  else Serial.println("Lệnh: status | dump state | sim auto | sim manual | sim offline | sim online | sim powerloss GIÂY | tare EMPTY | factor N | reconcile CHECKED | hoặc dán lệnh JSON");
+}
+void autoReconcileWeightDrop(unsigned long ms){
+  if(busy||recoveryPending||!state["active"].isNull()||!state["locked"].as<bool>()||
+     state["lock_reason"]!="WEIGHT_DROP_DETECTED"||!weightOK||bowlMissing||
+     !weightFilterReady()||weightWindowCount<WEIGHT_STABILITY_SAMPLES||
+     ms-stableAt<AUTO_RECONCILE_STABLE_MS||!validTime())return;
+  state["locked"]=false;state.remove("lock_reason");
+  if(!persist())return;
+  event("RECONCILED","DAILY_RESERVATION_RETAINED");
+  Serial.println("[HX711] Cân ổn định 2 giây; đã tự mở khóa. Phiên cấp cũ không tự chạy lại.");
+  syncTelemetryPending=true;
 }
 void setup(){
   Serial.begin(115200);bootId=id();
@@ -631,6 +667,16 @@ void setup(){
     if(state["last_scan"].isNull()){state["last_scan"]=0;changed=true;}
     if(state["seq"].isNull()){state["seq"]=0;changed=true;}
     if(state["locked"].isNull()){state["locked"]=false;changed=true;}
+    // Recover the interrupted reason when upgrading older firmware. Ignore
+    // rejected retries so the last completed session remains identifiable.
+    if(state["locked"].as<bool>()&&state["lock_reason"].isNull()&&state["history"].size()<MAX_HISTORY){
+      JsonObject lastSession;
+      for(JsonObject h:state["history"].as<JsonArray>())
+        if(h["status"]!="REJECTED"&&h["status"]!="COMMAND_EXPIRED")lastSession=h;
+      if(!lastSession.isNull()&&lastSession["status"]=="INTERRUPTED"&&lastSession["error_code"]=="WEIGHT_DROP_DETECTED"){
+        state["lock_reason"]="WEIGHT_DROP_DETECTED";changed=true;
+      }
+    }
     if(state["overflow_count"].isNull()){state["overflow_count"]=0;changed=true;}
     if(state["overflow_reported_count"].isNull()){state["overflow_reported_count"]=0;changed=true;}
     if(state["day"].isNull()||!state["day"].is<const char*>()||!state["day"].as<String>().length()){
@@ -649,7 +695,7 @@ void setup(){
     if(changed)persist();
   }
   if(storageOK&&!state["active"].isNull()){
-    recoveryPending=true;recoveryPendingSince=millis();state["locked"]=true;uiStatus="PHUC HOI";persist();
+    recoveryPending=true;recoveryPendingSince=millis();state["locked"]=true;state["lock_reason"]="POWER_RECOVERY_PENDING";uiStatus="PHUC HOI";persist();
     Serial.println("Phát hiện phiên cấp dang dở trong NVS; chờ đồng bộ giờ và cân ổn định để phục hồi.");
   }
   #if WOKWI_SIM
@@ -658,7 +704,7 @@ void setup(){
   busy=false;WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
   mqtt.begin(MQTT_HOST,MQTT_PORT,wifiClient);mqtt.onMessageAdvanced(mqttCallback);mqtt.setTimeout(1000);mqtt.setKeepAlive(60);
   Serial.printf("Đang kết nối Wi-Fi Wokwi-GUEST và MQTT %s:%d. Topic: %s | Client: %s\n",MQTT_HOST,MQTT_PORT,root.c_str(),mqttClientId.c_str());
-  Serial.println("PetFeeder đã sẵn sàng. Lệnh: status | sim manual | sim auto. Cân HX711 không tự chỉnh về 0 khi khởi động.");
+  Serial.println("PetFeeder đã sẵn sàng. Lệnh: status | dump state | sim manual | sim auto | sim offline | sim online. Cân HX711 không tự chỉnh về 0 khi khởi động.");
 }
 void loop(){
   while(Serial.available()){
@@ -718,6 +764,7 @@ void loop(){
       if(weightOK)trackWeight(max(0.0f,w),ms);else resetWeightFilter(ms);
     }else if(ms-lastWeightAt>=1000&&weightOK){weightOK=false;resetWeightFilter(ms);}
   }
+  autoReconcileWeightDrop(ms);
   if(busy){
     if(state["locked"].as<bool>())finish("INTERRUPTED","RECONCILIATION_REQUIRED",false);
     else if(!weightOK)finish(bowlMissing?"BOWL_MISSING":"SENSOR_ERROR",bowlMissing?"BOWL_MISSING":"MEASUREMENT_LOST",false);
@@ -740,7 +787,11 @@ void loop(){
     }
   }
   if(WiFi.status()==WL_CONNECTED){
-    if(!mqtt.connected()&&!busy&&ms-connectAt>=3000){connectAt=ms;
+    if(!mqtt.connected()
+#if WOKWI_SIM
+       &&!simMqttOffline
+#endif
+       &&!busy&&ms-connectAt>=3000){connectAt=ms;
       if(mqtt.connect(mqttClientId.c_str(),MQTT_USER,MQTT_PASS)){
         Serial.printf("Đã kết nối MQTT tới %s:%d.\n",MQTT_HOST,MQTT_PORT);
         mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);beatAt=ms;heartbeat();

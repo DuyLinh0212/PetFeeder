@@ -1,9 +1,7 @@
 import mqtt from 'mqtt';
 import {createHash,randomUUID} from 'node:crypto';
-import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {FeedingService} from './services/feedingService.mjs';
-import {Storage} from './storage/database.mjs';
 import {PostgresStorage} from './storage/postgres.mjs';
 import {migrateLegacy} from './storage/legacyMigration.mjs';
 import {createApiRouter} from './routes/index.mjs';
@@ -81,13 +79,12 @@ async function normalizeEvent(payload,body,db,clock){
 }
 
 // Compose storage, command handling, MQTT and the REST API.
-export async function createBackend({dataDir,legacyFile,brokerUrl,databaseUrl,storage,prefix='duylinh0212/petfeeder/v1',clock=()=>Math.floor(Date.now()/1000),transport:injected}={}){
-  const db=storage||(dataDir||process.env.NODE_ENV==='test'
-    ?new Storage(resolve(dataDir||fileURLToPath(new URL('../data/test/',import.meta.url)),'backend.sqlite'))
-    :new PostgresStorage(databaseUrl||process.env.DATABASE_URL));
+export async function createBackend({legacyFile,brokerUrl,databaseUrl,storage,prefix='duylinh0212/petfeeder/v1',clock=()=>Math.floor(Date.now()/1000),transport:injected}={}){
+  const db=storage||new PostgresStorage(databaseUrl||process.env.DATABASE_URL);
   try {
     await db.initialize?.();
-    await migrateLegacy(db,legacyFile??(dataDir?null:fileURLToPath(new URL('../data/database.json',import.meta.url))));
+    const legacyPath=legacyFile===undefined?fileURLToPath(new URL('../data/database.json',import.meta.url)):legacyFile;
+    await migrateLegacy(db,legacyPath);
   } catch(error) { await db.close?.(); throw error; }
   const pushNotifications=new PushNotificationService(db);
   let service,client;
