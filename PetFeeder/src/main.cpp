@@ -146,13 +146,13 @@ void trackWeight(float sample,unsigned long ms){
   if(!simAuto&&ready&&weightWindowCount>=WEIGHT_STABILITY_SAMPLES){
     const float tolerance=cf("tolerance_g");
     if(!weightStartupReported&&windowSpan<=tolerance&&ms-stableAt>=700){
-      Serial.printf("[HX711] Cân ổn định lúc khởi động: mẫu %.1f g | MA5 %.1f g\n",sample,filtered);
+      Serial.printf("[HX711] Cân ổn định lúc khởi động: mẫu %.1f g | MA5 %.1f g\r\n",sample,filtered);
       weightStartupReported=true;
     }else if(weightStartupReported&&windowSpan>tolerance&&!weightDeviationReported){
-      Serial.printf("[HX711] CẢNH BÁO CÂN DAO ĐỘNG: biên độ MA5 %.1f g, ngưỡng %.1f g | mẫu %.1f g | MA5 %.1f g\n",windowSpan,tolerance,sample,filtered);
+      Serial.printf("[HX711] CẢNH BÁO CÂN DAO ĐỘNG: biên độ MA5 %.1f g, ngưỡng %.1f g | mẫu %.1f g | MA5 %.1f g\r\n",windowSpan,tolerance,sample,filtered);
       weightDeviationReported=true;
     }else if(weightDeviationReported&&windowSpan<=tolerance&&ms-stableAt>=700){
-      Serial.printf("[HX711] Cân ổn định trở lại | MA5 %.1f g\n",filtered);
+      Serial.printf("[HX711] Cân ổn định trở lại | MA5 %.1f g\r\n",filtered);
       weightDeviationReported=false;
     }
   }
@@ -584,11 +584,11 @@ void serialCommand(String line){
     const long seconds=line.substring(14).toInt();
     if(seconds<0||seconds>30L*86400){Serial.println("Dùng: sim powerloss 30 hoặc sim powerloss 3601 (chỉ để thử trên Wokwi). ");return;}
     servo(false);state["sim_outage_s"]=seconds;
-    if(persist()){Serial.printf("Wokwi: giả lập mất điện %ld giây rồi khởi động lại...\n",seconds);delay(100);ESP.restart();}
+    if(persist()){Serial.printf("Wokwi: giả lập mất điện %ld giây rồi khởi động lại...\r\n",seconds);delay(100);ESP.restart();}
     return;
   }
 #endif
-  if(line=="status"){heartbeat();Serial.printf("Trạng thái: cân=%.1f g | đã cân chỉnh=%s | giờ hợp lệ=%s | đang cấp=%s | Wi-Fi=%s | MQTT=%s | mã MQTT=%d\n",weightG,state["calibrated"].as<bool>()?"có":"không",validTime()?"có":"không",busy?"có":"không",WiFi.status()==WL_CONNECTED?"đã nối":"mất kết nối",mqtt.connected()?"đã nối":"mất kết nối",static_cast<int>(mqtt.lastError()));}
+  if(line=="status"){heartbeat();Serial.printf("Trạng thái: cân=%.1f g | đã cân chỉnh=%s | giờ hợp lệ=%s | đang cấp=%s | Wi-Fi=%s | MQTT=%s | mã MQTT=%d | timeout=%.0f s | nhịp=%.0f ms\r\n",weightG,state["calibrated"].as<bool>()?"có":"không",validTime()?"có":"không",busy?"có":"không",WiFi.status()==WL_CONNECTED?"đã nối":"mất kết nối",mqtt.connected()?"đã nối":"mất kết nối",static_cast<int>(mqtt.lastError()),cf("feed_timeout_s"),cf("pulse_step_ms"));}
   else if(line=="tare EMPTY"&&!busy&&weightOK){state["offset"]=scale.read();state["calibrated"]=true;persist();Serial.println("ĐÃ CÂN CHỈNH: đã lưu mức cân khi bát rỗng.");}
   else if(line.startsWith("factor ")&&!busy){float factor=line.substring(7).toFloat();if(isfinite(factor)&&factor>0){state["factor"]=factor;state["calibrated"]=false;persist();Serial.println("Hãy đặt bát rỗng rồi nhập tare EMPTY để cân chỉnh.");}}
   else if(line=="reconcile CHECKED"&&!busy&&weightOK&&validTime()){
@@ -670,7 +670,7 @@ void autoReconcileWeightDrop(unsigned long ms){
     uiStatus="DANG CAP";
     if(!persist())return;
     servo(true);toneNotice();
-    Serial.printf("[HX711] Cân ổn định 2 giây; tự tiếp tục phiên cũ, còn %.1f g.\n",remaining);
+    Serial.printf("[HX711] Cân ổn định 2 giây; tự tiếp tục phiên cũ, còn %.1f g.\r\n",remaining);
   }
   syncTelemetryPending=true;
 }
@@ -771,7 +771,7 @@ void setup(){
 #endif
   busy=false;WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin("Wokwi-GUEST","",6);configTime(0,0,"pool.ntp.org","time.google.com");
   mqtt.begin(MQTT_HOST,MQTT_PORT,wifiClient);mqtt.onMessageAdvanced(mqttCallback);mqtt.setTimeout(1000);mqtt.setKeepAlive(60);
-  Serial.printf("Đang kết nối Wi-Fi Wokwi-GUEST và MQTT %s:%d. Topic: %s | Client: %s\n",MQTT_HOST,MQTT_PORT,root.c_str(),mqttClientId.c_str());
+  Serial.printf("Đang kết nối Wi-Fi Wokwi-GUEST và MQTT %s:%d. Topic: %s | Client: %s\r\n",MQTT_HOST,MQTT_PORT,root.c_str(),mqttClientId.c_str());
   Serial.println("PetFeeder đã sẵn sàng. Lệnh: status | dump state | sim manual | sim auto | sim offline | sim online. Cân HX711 không tự chỉnh về 0 khi khởi động.");
 }
 void loop(){
@@ -819,7 +819,7 @@ void loop(){
       if(busy&&motorOpen&&ms-servoAt>=(finePulse?150:cf("pulse_step_ms")-50)){
         float remaining=state["active"]["target_portion_g"].as<float>()-(state["sim_bowl_g"].as<float>()-state["active"]["baseline"].as<float>());
         float gain=max(0.0f,min(finePulse?2.5f:5.0f,remaining));
-        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=max(0.0f,state["sim_hopper_g"].as<float>()-gain);servo(false);persist();Serial.printf("MÔ PHỎNG: lượng cân tăng %.1f g (số liệu giả lập).\n",gain);}
+        if(gain>0){state["sim_bowl_g"]=state["sim_bowl_g"].as<float>()+gain;state["sim_hopper_g"]=max(0.0f,state["sim_hopper_g"].as<float>()-gain);servo(false);persist();Serial.printf("MÔ PHỎNG: lượng cân tăng %.1f g (số liệu giả lập).\r\n",gain);}
       }
       float w=state["sim_bowl_g"].as<float>();weightOK=isfinite(w);bowlMissing=false;
       if(weightOK)trackWeight(w,ms);else resetWeightFilter(ms);
@@ -845,7 +845,11 @@ void loop(){
       }
       else if(actual>target+cf("tolerance_g"))finish("OVER_PORTION","OVER_PORTION");
       else if(actual>0&&actual>=target-cf("tolerance_g")){servo(false);finish("SUCCESS");}
-      else if(ms-feedAt>=(unsigned long)(cf("feed_timeout_s")*1000))finish(actual>0?"PARTIAL":"TIMEOUT","FEED_TIMEOUT");
+      else if(ms-feedAt>=(unsigned long)(cf("feed_timeout_s")*1000)){
+        const unsigned long timeoutMs=static_cast<unsigned long>(cf("feed_timeout_s")*1000.0f);
+        Serial.printf("[CẤP] Hết thời gian sau %lu/%lu ms; cân ghi nhận %.1f/%.1f g.\r\n",ms-feedAt,timeoutMs,actual,target);
+        finish(actual>0?"PARTIAL":"TIMEOUT","FEED_TIMEOUT");
+      }
       else if(motorOpen){
         if(ms-servoAt>=(finePulse?200:cf("pulse_step_ms"))){servo(false);servoAt=ms;}
       }else if(ms-servoAt>=600){
@@ -861,7 +865,7 @@ void loop(){
 #endif
        &&!busy&&ms-connectAt>=3000){connectAt=ms;
       if(mqtt.connect(mqttClientId.c_str(),MQTT_USER,MQTT_PASS)){
-        Serial.printf("Đã kết nối MQTT tới %s:%d.\n",MQTT_HOST,MQTT_PORT);
+        Serial.printf("Đã kết nối MQTT tới %s:%d.\r\n",MQTT_HOST,MQTT_PORT);
         mqtt.subscribe((root+"/command").c_str(),1);mqtt.subscribe((root+"/sync").c_str(),1);mqtt.subscribe((root+"/ack").c_str(),1);beatAt=ms;heartbeat();
       }
     }
