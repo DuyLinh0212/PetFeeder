@@ -505,8 +505,9 @@ class ApiService {
       final status = await _getCommandStatus(server, commandId);
       if (status != null) {
         final current = _commandResult(status);
-        if (!_isPendingCommand(status['status']))
+        if (!_isPendingCommand(status['status'])) {
           await prefs.remove(pendingKey);
+        }
         return current;
       }
       return _pendingFeedResult(
