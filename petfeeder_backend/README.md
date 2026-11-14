@@ -1,6 +1,6 @@
 # PetFeeder Backend & MQTT Gateway
 
-Node.js >=22.13, Express, SQLite và MQTT. Chạy `npm ci`, rồi `npm start`; mặc định backend chạy tại `http://127.0.0.1:3000`. Dùng `HOST=0.0.0.0` để app trên điện thoại truy cập qua mạng LAN.
+Node.js >=22.13, Express, PostgreSQL và MQTT. Backend cần `DATABASE_URL`; chạy `npm ci`, rồi `npm start`. Mặc định server chạy tại `http://127.0.0.1:3000`. Dùng `HOST=0.0.0.0` để app trên điện thoại truy cập qua mạng LAN.
 
 ## API
 
@@ -37,8 +37,8 @@ Prefix mặc định `duylinh0212/petfeeder/v1`; cấu hình cùng prefix ở ba
 | `/sync` | Backend → ESP32 | `config`, `schedules`, `version`, `server_time` |
 | `/telemetry` | ESP32 → Backend | `occurred_at`, `busy`, `weight_g`, khóa, giờ, boot ID và version |
 | `/events` | ESP32 → Backend | `event_id`, `seq`, thời gian, trạng thái và lượng thực cấp |
-| `/ack` | Backend → ESP32 | `event_id` sau khi SQLite đã ghi sự kiện |
+| `/ack` | Backend → ESP32 | `event_id` sau khi PostgreSQL đã ghi sự kiện |
 
-Lịch và sự kiện dùng hàng đợi bền vững phía ESP32; backend loại sự kiện trùng theo `event_id`. SQLite lưu trong `data/main/backend.sqlite`. Lần chạy đầu có thể nhập lịch sử cũ từ `data/database.json` để giữ dữ liệu cần cho hạn mức; tệp JSON gốc không bị sửa.
+Lịch và sự kiện dùng hàng đợi bền vững phía ESP32; backend loại sự kiện trùng theo `event_id` và lưu dữ liệu vận hành trong PostgreSQL qua `DATABASE_URL`. `backend.sqlite` không được dùng khi backend chạy bình thường. Script `npm run migrate:sqlite` chỉ đọc một bản SQLite cũ nếu bạn chủ động cần nhập dữ liệu sang PostgreSQL; chế độ test cũng dùng SQLite riêng. Lần chạy đầu có thể nhập lịch sử cũ từ `data/database.json` để giữ dữ liệu cần cho hạn mức; tệp JSON gốc không bị sửa.
 
 Các phần chính: `src/domain/feedingPolicy.mjs` kiểm tra cấu hình/lệnh/lịch; `src/services/feedingService.mjs` áp dụng giới hạn và đồng bộ; `src/routes/index.mjs` cung cấp API; `src/storage/` lưu trạng thái.

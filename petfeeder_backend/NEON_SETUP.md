@@ -6,9 +6,9 @@
 4. For local startup, `scripts/start_backend.ps1` reads the Neon URL from `PetFeeder/Key.txt` without printing it and changes only its database path to `/petfeeder`. Alternatively, set `DATABASE_URL` yourself.
 5. For deployment, set `DATABASE_URL` in the host's secret environment settings. Never commit `Key.txt` or paste its URL into source files.
 
-## Import current SQLite data
+## Optional import of a legacy SQLite backup
 
-The import utility reads the existing ignored file `data/main/backend.sqlite` and inserts bucket records that do not already exist in Neon:
+The backend does not use SQLite at runtime. If you have an older SQLite backup that you still need to import, point `SQLITE_PATH` at that file; the utility inserts bucket records that do not already exist in Neon:
 
 ```powershell
 $env:DATABASE_URL = '<Neon connection URL targeting database petfeeder>'
@@ -16,4 +16,4 @@ npm run migrate:sqlite
 Remove-Item Env:DATABASE_URL
 ```
 
-Set `SQLITE_PATH` first if the SQLite file is stored elsewhere. The importer reports counts only, not record contents.
+Set `SQLITE_PATH` to the backup's path before running the command. The importer reports counts only, not record contents. A local `data/main/backend.sqlite`, if present, is not needed for normal backend operation.
