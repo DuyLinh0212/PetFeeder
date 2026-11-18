@@ -22,19 +22,53 @@ class ApiService {
   ApiService._internal();
   ApiService.testing(this._client, {required this.baseUrl});
   http.Client? _client;
-  Future<http.Response> _get(Uri uri) => _client?.get(uri) ?? http.get(uri);
+  String _accessKey = '';
+  String get accessKey => _accessKey;
+
+  Map<String, String>? _authorizedHeaders(
+    Uri uri,
+    Map<String, String>? headers, {
+    String? candidateKey,
+  }) {
+    final key =
+        candidateKey ??
+        (_accessKey.isNotEmpty && uri.origin == Uri.parse(baseUrl).origin
+            ? _accessKey
+            : '');
+    if (key.isEmpty) return headers;
+    if (uri.scheme != 'https') {
+      throw const FormatException('Khóa truy cập cần địa chỉ HTTPS.');
+    }
+    return {...?headers, 'Authorization': 'Bearer $key'};
+  }
+
+  Future<http.Response> _get(Uri uri, {String? candidateKey}) {
+    final headers = _authorizedHeaders(uri, null, candidateKey: candidateKey);
+    return _client?.get(uri, headers: headers) ??
+        http.get(uri, headers: headers);
+  }
+
   Future<http.Response> _post(
     Uri uri, {
     Map<String, String>? headers,
     Object? body,
-  }) =>
-      _client?.post(uri, headers: headers, body: body) ??
-      http.post(uri, headers: headers, body: body);
+  }) {
+    final authorized = _authorizedHeaders(uri, headers);
+    return _client?.post(uri, headers: authorized, body: body) ??
+        http.post(uri, headers: authorized, body: body);
+  }
+
   Future<http.Response> _postFeed(Uri uri, {required String body}) async {
     final requestClient = _client ?? http.Client();
     try {
       return await requestClient
-          .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
+          .post(
+            uri,
+            headers: _authorizedHeaders(uri, {
+              'Content-Type': 'application/json',
+            }),
+            body: body,
+          )
           .timeout(const Duration(seconds: 8));
     } finally {
       // Closing the request-scoped client aborts the socket when the timeout fires.
@@ -46,24 +80,31 @@ class ApiService {
     Uri uri, {
     Map<String, String>? headers,
     Object? body,
-  }) =>
-      _client?.put(uri, headers: headers, body: body) ??
-      http.put(uri, headers: headers, body: body);
-  Future<http.Response> _patch(Uri uri) =>
-      _client?.patch(uri) ?? http.patch(uri);
-  Future<http.Response> _delete(Uri uri) =>
-      _client?.delete(uri) ?? http.delete(uri);
-  Future<http.Response> _deleteJson(Uri uri, {required String body}) =>
-      _client?.delete(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: body,
-      ) ??
-      http.delete(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: body,
-      );
+    String? candidateKey,
+  }) {
+    final authorized = _authorizedHeaders(
+      uri,
+      headers,
+      candidateKey: candidateKey,
+    );
+    return _client?.put(uri, headers: authorized, body: body) ??
+        http.put(uri, headers: authorized, body: body);
+  }
+
+  Future<http.Response> _patch(Uri uri) {
+    final headers = _authorizedHeaders(uri, null);
+    return _client?.patch(uri, headers: headers) ??
+        http.patch(uri, headers: headers);
+  }
+
+  Future<http.Response> _delete(Uri uri, {String? body}) {
+    final headers = _authorizedHeaders(
+      uri,
+      body == null ? null : {'Content-Type': 'application/json'},
+    );
+    return _client?.delete(uri, headers: headers, body: body) ??
+        http.delete(uri, headers: headers, body: body);
+  }
 
   // Mặc định:
   // http://10.0.2.2:3000 khi chạy trên Android Emulator
@@ -78,10 +119,16 @@ class ApiService {
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList('main_api_connection');
+    if (saved != null && saved.length == 2) {
+      baseUrl = saved.first;
+      _accessKey = saved.last;
+      return;
+    }
     baseUrl = prefs.getString('main_api_base_url') ?? baseUrl;
   }
 
-  Future<void> setBaseUrl(String url) async {
+  Future<void> setBaseUrl(String url, {String candidateKey = ''}) async {
     final candidate = url.trim().replaceFirst(RegExp(r'/+$'), '');
     final uri = Uri.tryParse(candidate);
     if (uri == null ||
@@ -89,23 +136,32 @@ class ApiService {
         uri.host.isEmpty) {
       throw const FormatException('Địa chỉ máy chủ không hợp lệ.');
     }
+    if (candidateKey.isNotEmpty && uri.scheme != 'https') {
+      throw const FormatException('Khóa truy cập cần địa chỉ HTTPS.');
+    }
     final prefs = await SharedPreferences.getInstance();
-    if (!await prefs.setString('main_api_base_url', candidate)) {
+    if (!await prefs.setStringList('main_api_connection', [
+      candidate,
+      candidateKey,
+    ])) {
       throw StateError('Chưa lưu được địa chỉ kết nối.');
     }
     baseUrl = candidate;
+    _accessKey = candidateKey;
   }
 
   Future<void> saveConnectionAddress(
     String address, {
     String? serverUrl,
+    String? candidateKey,
   }) async {
     final endpoint = serverUrl ?? baseUrl;
     final response = await _put(
       Uri.parse('$endpoint/api/device/connection'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'connection_address': address}),
-    ).timeout(const Duration(seconds: 4));
+      candidateKey: candidateKey,
+    ).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       final body = jsonDecode(utf8.decode(response.bodyBytes));
       throw Exception(
@@ -141,7 +197,7 @@ class ApiService {
     required String installationId,
     required String platform,
   }) async {
-    final response = await _deleteJson(
+    final response = await _delete(
       Uri.parse('$baseUrl/api/notifications/register'),
       body: jsonEncode({
         'fid': fid,
@@ -208,7 +264,13 @@ class ApiService {
             query: null,
             fragment: null,
           );
-          current = WebSocketChannel.connect(uri);
+          final protocols = accessKey.isEmpty
+              ? null
+              : [
+                  'petfeeder',
+                  'petfeeder.token.${base64Url.encode(utf8.encode(accessKey)).replaceAll('=', '')}',
+                ];
+          current = WebSocketChannel.connect(uri, protocols: protocols);
           channel = current;
           await waitForReady(current.ready);
           if (stopped) break;
@@ -272,15 +334,27 @@ class ApiService {
   }
 
   // Trạng thái cân, giới hạn ngày và kết nối thiết bị.
-  Future<DeviceStatus> getDeviceStatus({String? serverUrl}) async {
+  Future<DeviceStatus> getDeviceStatus({
+    String? serverUrl,
+    String? candidateKey,
+  }) async {
     return DeviceStatus.fromJson(
-      await _getDeviceStatusJson(serverUrl: serverUrl),
+      await _getDeviceStatusJson(
+        serverUrl: serverUrl,
+        candidateKey: candidateKey,
+      ),
     );
   }
 
-  Future<Map<String, dynamic>> _getDeviceStatusJson({String? serverUrl}) async {
+  Future<Map<String, dynamic>> _getDeviceStatusJson({
+    String? serverUrl,
+    String? candidateKey,
+  }) async {
     final uri = Uri.parse('${serverUrl ?? baseUrl}/api/device/status');
-    final res = await _get(uri).timeout(const Duration(seconds: 4));
+    final res = await _get(
+      uri,
+      candidateKey: candidateKey,
+    ).timeout(Duration(seconds: candidateKey?.isNotEmpty == true ? 90 : 4));
     if (res.statusCode == 200) {
       final data = jsonDecode(utf8.decode(res.bodyBytes));
       if (data is Map<String, dynamic> && data['data'] is Map) {

@@ -15,6 +15,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _url = TextEditingController();
+  final _accessKey = TextEditingController();
   final _form = GlobalKey<FormState>();
   bool _testing = false;
   String? _connectionMessage;
@@ -28,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _url.text = ApiService().baseUrl;
+    _accessKey.text = ApiService().accessKey;
     _loadNotificationState();
   }
 
@@ -77,6 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _url.dispose();
+    _accessKey.dispose();
     super.dispose();
   }
 
@@ -88,11 +91,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _connectionMessage = null;
     });
     final candidate = _url.text.trim().replaceFirst(RegExp(r'/+$'), '');
+    final key = _accessKey.text.trim();
     try {
-      final status = await ApiService().getDeviceStatus(serverUrl: candidate);
+      final status = await ApiService().getDeviceStatus(
+        serverUrl: candidate,
+        candidateKey: key,
+      );
       if (!mounted) return;
-      await ApiService().saveConnectionAddress(candidate, serverUrl: candidate);
-      await ApiService().setBaseUrl(candidate);
+      await ApiService().saveConnectionAddress(
+        candidate,
+        serverUrl: candidate,
+        candidateKey: key,
+      );
+      await ApiService().setBaseUrl(candidate, candidateKey: key);
       if (!mounted) return;
       setState(() {
         _connectionOk = true;
@@ -158,7 +169,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Điện thoại và máy chủ cần truy cập được cùng mạng.',
+                  'Dùng địa chỉ trong mạng nội bộ hoặc URL HTTPS của máy chủ triển khai.',
                   style: TextStyle(color: AppTheme.textMuted, height: 1.5),
                 ),
                 const SizedBox(height: 20),
@@ -184,6 +195,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         uri.hasFragment ||
                         uri.userInfo.isNotEmpty) {
                       return 'Nhập địa chỉ http:// hoặc https:// hợp lệ.';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _accessKey,
+                  enabled: !_testing,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  onFieldSubmitted: (_) => _connect(),
+                  decoration: const InputDecoration(
+                    labelText: 'Khóa truy cập (nếu có)',
+                    prefixIcon: Icon(Icons.key_rounded),
+                  ),
+                  validator: (value) {
+                    if ((value?.trim().isNotEmpty ?? false) &&
+                        Uri.tryParse(_url.text.trim())?.scheme != 'https') {
+                      return 'Khóa truy cập cần địa chỉ HTTPS.';
                     }
                     return null;
                   },

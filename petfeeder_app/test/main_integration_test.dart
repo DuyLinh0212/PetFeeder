@@ -13,6 +13,33 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test(
+    'an access key is saved with, and sent only to, its HTTPS server',
+    () async {
+      final client = MockClient((request) async {
+        final expected = request.url.host == 'feeder.example'
+            ? 'Bearer secret'
+            : null;
+        expect(request.headers['Authorization'], expected);
+        return http.Response('{"data":{}}', 200);
+      });
+      final api = ApiService.testing(client, baseUrl: 'http://old-server');
+      await expectLater(
+        api.setBaseUrl('http://feeder.example', candidateKey: 'secret'),
+        throwsFormatException,
+      );
+      await api.getDeviceStatus(
+        serverUrl: 'https://feeder.example',
+        candidateKey: 'secret',
+      );
+      await api.setBaseUrl('https://feeder.example', candidateKey: 'secret');
+      final reopened = ApiService.testing(client, baseUrl: 'http://old-server');
+      await reopened.initialize();
+      await reopened.getDeviceStatus();
+      await reopened.getDeviceStatus(serverUrl: 'https://other.example');
+    },
+  );
+
+  test(
     'lost response persists the pending command across app restarts',
     () async {
       final payloads = <Map<String, dynamic>>[];
