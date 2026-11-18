@@ -42,6 +42,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   bool _freshSnapshotAvailable = false;
   Future<void>? _pendingStatus;
   StreamSubscription<Map<String, dynamic>>? _realtimeSubscription;
+  int _connectionRevision = 0;
   int _historyRevision = 0;
   int _scheduleRevision = 0;
 
@@ -49,9 +50,27 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   void initState() {
     super.initState();
     _fetchStatus();
+    _watchRealtime();
+  }
+
+  void _watchRealtime() {
     _realtimeSubscription = ApiService().watchRealtime().listen(
       _handleRealtime,
     );
+  }
+
+  Future<void> _reconnect() async {
+    final revision = ++_connectionRevision;
+    await _realtimeSubscription?.cancel();
+    await _pendingStatus;
+    if (!mounted || revision != _connectionRevision) return;
+    setState(() {
+      _realtimeConnected = false;
+      _freshSnapshotAvailable = false;
+      _deviceStatus = null;
+    });
+    _watchRealtime();
+    await _fetchStatus();
   }
 
   @override
@@ -140,7 +159,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         onRefresh: _fetchStatus,
       ),
       SchedulesScreen(refreshToken: _scheduleRevision),
-      SettingsScreen(onRefresh: () => unawaited(_fetchStatus())),
+      SettingsScreen(onRefresh: () => unawaited(_reconnect())),
     ];
     return Scaffold(
       appBar: AppBar(

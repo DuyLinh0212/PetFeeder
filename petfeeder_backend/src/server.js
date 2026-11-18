@@ -3,13 +3,19 @@ const cors = require('cors');
 const http = require('node:http');
 const path = require('node:path');
 const {performance} = require('node:perf_hooks');
+const {createHash,timingSafeEqual} = require('node:crypto');
 const {WebSocketServer,WebSocket} = require('ws');
 const config = require('./config');
 
-async function startServer() {
+async function startServer(backendOptions = {}) {
+  const token=process.env.PETFEEDER_API_TOKEN;
+  if(process.env.RENDER==='true'&&!token)throw new Error('PETFEEDER_API_TOKEN is required on Render');
+  const digest=value=>createHash('sha256').update(value).digest();
+  const authorization=token?digest(`Bearer ${token}`):null;
+  const websocketToken=token?digest(`petfeeder.token.${Buffer.from(token).toString('base64url')}`):null;
   const {createBackend} = await import('./app.mjs');
   const integration=await createBackend({brokerUrl:config.mqtt.brokerUrl,databaseUrl:process.env.DATABASE_URL,
-    prefix:process.env.MQTT_TOPIC_PREFIX||'duylinh0212/petfeeder/v1'});
+    prefix:process.env.MQTT_TOPIC_PREFIX||'duylinh0212/petfeeder/v1', ...backendOptions});
   const app=express();
   app.use((req,res,next)=>{
     if(req.path!=='/api'&&!req.path.startsWith('/api/'))return next();
@@ -18,6 +24,11 @@ async function startServer() {
     next();
   });
   app.use(cors());app.use(express.json({limit:'32kb'}));
+  app.use('/api',(req,res,next)=>{
+    if(!authorization||timingSafeEqual(authorization,digest(req.get('authorization')||'')))return next();
+    res.set('WWW-Authenticate','Bearer');
+    res.status(401).json({success:false,code:'UNAUTHORIZED',message:'Khóa truy cập máy chủ chưa đúng.'});
+  });
   app.use('/api',integration.router);
   app.get('/health',async(req,res)=>{
     try {
@@ -35,7 +46,8 @@ async function startServer() {
     code:err instanceof SyntaxError?'INVALID_JSON':err.code||'INTERNAL_ERROR',message:err.message}));
 
   const server=http.createServer(app);
-  const realtime=new WebSocketServer({noServer:true});
+  const realtime=new WebSocketServer({noServer:true,handleProtocols:protocols=>
+    websocketToken?'petfeeder':protocols.values().next().value});
   const peers=new Set();
   const broadcast=message=>{
     const data=JSON.stringify(message);
@@ -51,6 +63,13 @@ async function startServer() {
     let pathname;
     try { pathname=new URL(request.url,'http://localhost').pathname; } catch { socket.destroy();return; }
     if(pathname!=='/api/realtime'){socket.destroy();return;}
+    if(websocketToken){
+      const protocols=(request.headers['sec-websocket-protocol']||'').split(',').map(value=>value.trim());
+      if(!protocols.includes('petfeeder')||!protocols.some(value=>timingSafeEqual(websocketToken,digest(value)))){
+        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        return;
+      }
+    }
     realtime.handleUpgrade(request,socket,head,peer=>realtime.emit('connection',peer,request));
   });
 

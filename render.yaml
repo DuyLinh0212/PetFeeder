@@ -1,0 +1,30 @@
+projects:
+  - name: PetFeeder
+    environments:
+      - name: production
+        services:
+          - type: web
+            name: petfeeder-backend
+            runtime: node
+            plan: free
+            region: singapore
+            rootDir: petfeeder_backend
+            buildCommand: npm ci --omit=dev
+            startCommand: npm start
+            healthCheckPath: /health
+            autoDeployTrigger: "off"
+            envVars:
+              - key: NODE_VERSION
+                value: "24.14.0"
+              - key: HOST
+                value: "0.0.0.0"
+              - key: DATABASE_URL
+                sync: false
+              - key: MQTT_BROKER_URL
+                sync: false
+              - key: MQTT_TOPIC_PREFIX
+                sync: false
+              - key: FIREBASE_SERVICE_ACCOUNT_JSON
+                sync: false
+              - key: PETFEEDER_API_TOKEN
+                generateValue: true
