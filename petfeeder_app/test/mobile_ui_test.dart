@@ -481,7 +481,11 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('Bữa sáng cho bé'), findsOneWidget);
         await navigate(tester, 'Cài đặt');
-        await tester.enterText(find.byType(TextFormField), 'unreachable.local');
+        final serverAddress = find.widgetWithText(
+          TextFormField,
+          'Địa chỉ máy chủ',
+        );
+        await tester.enterText(serverAddress, 'unreachable.local');
         await reveal(tester, find.text('Lưu kết nối'));
         await tester.tap(find.text('Lưu kết nối'));
         await tester.pumpAndSettle();
@@ -489,10 +493,7 @@ void main() {
           find.text('Nhập địa chỉ http:// hoặc https:// hợp lệ.'),
           findsOneWidget,
         );
-        await tester.enterText(
-          find.byType(TextFormField),
-          'http://unreachable.local:3000',
-        );
+        await tester.enterText(serverAddress, 'http://unreachable.local:3000');
         await tester.tap(find.text('Lưu kết nối'));
         await tester.pumpAndSettle();
         expect(ApiService().baseUrl, 'http://localhost:3000');
