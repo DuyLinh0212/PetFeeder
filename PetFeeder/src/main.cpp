@@ -369,7 +369,7 @@ bool configValid(JsonVariantConst c){
   if(!c.is<JsonObjectConst>()||(c.size()!=12&&!(c.size()==13&&legacyPulseLimit)))return false;
   struct Bound{const char* key;float lo,hi;};
   Bound bs[]={{"max_portion_g",1,500},{"daily_limit_g",1,2000},{"min_interval_s",1,86400},{"command_ttl_s",5,300},
-    {"feed_timeout_s",5,120},{"tolerance_g",0.1,10},{"timezone_offset_min",-720,840},
+    {"feed_timeout_s",5,1800},{"tolerance_g",0.1,10},{"timezone_offset_min",-720,840},
     {"bowl_capacity_g",1,5000},{"max_daily_feeds",1,100},
     {"coarse_fine_threshold_g",1,100},
     {"pulse_step_angle",1,180},{"pulse_step_ms",100,2000}};

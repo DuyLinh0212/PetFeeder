@@ -77,3 +77,12 @@ test('A device returning after the offline timeout receives a fresh sync',async 
   const f=fixture(t);await f.heartbeat();f.advance(21);await f.heartbeat();
   assert.equal(f.sent.length,2);
 });
+
+test('feed_timeout_s accepts 500 seconds up to 1800 seconds and rejects values outside [5, 1800]',async t=>{
+  const f=fixture(t);
+  const updated=await f.service.configure({feed_timeout_s:500});
+  assert.equal(updated.feed_timeout_s,500);
+  assert.equal(f.sent.at(-1).body.config.feed_timeout_s,500);
+  await assert.rejects(()=>f.service.configure({feed_timeout_s:1801}),{code:'INVALID_FIELD',field:'feed_timeout_s'});
+  await assert.rejects(()=>f.service.configure({feed_timeout_s:4}),{code:'INVALID_FIELD',field:'feed_timeout_s'});
+});
